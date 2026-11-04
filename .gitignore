@@ -1,8 +1,48 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
+﻿# Environment variables and secrets
 .env*
 !.env.example
+**/.env*
+
+# Dependencies
+node_modules/
+functions/node_modules/
+
+# Build output
+build/
+dist/
+dist-electron/
+release/
+coverage/
+.vite/
+.cache/
+
+# Firebase local state and debug logs
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+
+# Local databases and database backups
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Credentials and private keys
+*service-account*.json
+*private-key*
+*.pem
+*.p12
+*.pfx
+*.key
+
+# Logs and operating system files
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local backups
+backups/
+*-backup/
