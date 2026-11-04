@@ -1,0 +1,6 @@
+{
+  "name": "SmartMind POS",
+  "description": "Commercial multi-shop Point of Sale desktop application foundation with shop-isolated inventory, POS terminal, sales history, reporting, and offline sync status architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

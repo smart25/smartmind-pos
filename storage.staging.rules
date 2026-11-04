@@ -1,0 +1,86 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ===============================================================
+    // Helper Functions (Staging Environment: smartmind-pos-staging)
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function getUserProfile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasUserDoc() {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+
+    function isAuthorizedTenantMember(businessId) {
+      return hasUserDoc() &&
+        getUserProfile().status == 'active' &&
+        getUserProfile().businessId == businessId;
+    }
+
+    // Staging Platform Administrator: Strictly smart@smartmindconcept.com
+    function isPlatformAdmin() {
+      return hasUserDoc() &&
+        getUserProfile().status == 'active' &&
+        getUserProfile().role == 'platform_admin' &&
+        request.auth.token.email == "smart@smartmindconcept.com" &&
+        getUserProfile().email == "smart@smartmindconcept.com";
+    }
+
+    // Canonical role: business_owner
+    function isBusinessOwnerOf(businessId) {
+      return isAuthorizedTenantMember(businessId) &&
+        getUserProfile().role == 'business_owner';
+    }
+
+    // Hardened shop manager assignment: validates list structure or direct shop property
+    function isAssignedShopManager(businessId, shopId) {
+      return isAuthorizedTenantMember(businessId) &&
+        getUserProfile().role == 'shop_manager' &&
+        ((('shopId' in getUserProfile()) && getUserProfile().shopId == shopId) ||
+         (('assignedShopIds' in getUserProfile()) && getUserProfile().assignedShopIds is list && shopId in getUserProfile().assignedShopIds));
+    }
+
+    function isValidLogoFile() {
+      return request.resource.size <= 512 * 1024 &&
+        (request.resource.contentType.matches('image/png') ||
+         request.resource.contentType.matches('image/jpeg') ||
+         request.resource.contentType.matches('image/webp'));
+    }
+
+    // ===============================================================
+    // Branding Rules (Restricted to Exact Canonical Object Names)
+    // ===============================================================
+
+    // Business-wide branding: businesses/{businessId}/branding/business-logo
+    match /businesses/{businessId}/branding/business-logo {
+      allow read: if isPlatformAdmin() || isAuthorizedTenantMember(businessId);
+
+      allow write: if (isPlatformAdmin() || isBusinessOwnerOf(businessId)) &&
+        isValidLogoFile();
+
+      allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+    }
+
+    // Shop-specific branding: businesses/{businessId}/shops/{shopId}/branding/shop-logo
+    match /businesses/{businessId}/shops/{shopId}/branding/shop-logo {
+      allow read: if isPlatformAdmin() || isAuthorizedTenantMember(businessId);
+
+      allow write: if (isPlatformAdmin() || isBusinessOwnerOf(businessId) || isAssignedShopManager(businessId, shopId)) &&
+        isValidLogoFile();
+
+      allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || isAssignedShopManager(businessId, shopId);
+    }
+
+    // Catch-all deny for all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

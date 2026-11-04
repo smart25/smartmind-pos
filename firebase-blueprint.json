@@ -1,0 +1,485 @@
+{
+  "entities": {
+    "Business": {
+      "title": "Business",
+      "description": "Registered retail business tenant with exactly one primary owner.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique business ID (biz-XXXX-XXXX)" },
+        "name": { "type": "string", "description": "Display name of the business" },
+        "legalName": { "type": "string", "description": "Registered legal name" },
+        "businessType": { "type": "string", "description": "Industry category" },
+        "registrationNumber": { "type": "string", "description": "RC number" },
+        "taxIdentificationNumber": { "type": "string", "description": "TIN" },
+        "ownerUserId": { "type": "string", "description": "UID of the single primary business owner" },
+        "ownerName": { "type": "string", "description": "Full name of the primary owner" },
+        "ownerEmail": { "type": "string", "format": "email", "description": "Email of the primary owner" },
+        "contactEmail": { "type": "string", "format": "email", "description": "Business contact email" },
+        "primaryPhone": { "type": "string", "description": "Primary phone number" },
+        "headquartersAddress": { "type": "string", "description": "Headquarters address" },
+        "currencyCode": { "type": "string", "description": "ISO currency code (e.g. NGN)" },
+        "currencySymbol": { "type": "string", "description": "Currency symbol (e.g. ₦)" },
+        "defaultTaxRatePercent": { "type": "number", "description": "Default tax rate percentage" },
+        "status": { "type": "string", "enum": ["active", "suspended"], "description": "Tenant operational status" },
+        "notes": { "type": "string", "description": "Optional onboarding notes" },
+        "schemaVersion": { "type": "integer", "description": "Document schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": [
+        "id",
+        "name",
+        "businessType",
+        "ownerUserId",
+        "ownerName",
+        "ownerEmail",
+        "contactEmail",
+        "primaryPhone",
+        "headquartersAddress",
+        "currencyCode",
+        "currencySymbol",
+        "defaultTaxRatePercent",
+        "status",
+        "schemaVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Shop": {
+      "title": "Shop",
+      "description": "Independent retail branch belonging to a single Business.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique shop ID" },
+        "businessId": { "type": "string", "description": "Parent business ID" },
+        "code": { "type": "string", "description": "Short shop code" },
+        "name": { "type": "string", "description": "Branch name" },
+        "category": { "type": "string", "description": "Shop retail category" },
+        "locationCity": { "type": "string", "description": "City" },
+        "address": { "type": "string", "description": "Physical address" },
+        "phone": { "type": "string", "description": "Branch contact phone" },
+        "managerName": { "type": "string", "description": "Assigned manager name" },
+        "status": { "type": "string", "enum": ["active", "inactive", "maintenance"], "description": "Branch status" },
+        "terminalId": { "type": "string", "description": "Primary POS terminal identifier" },
+        "taxRatePercent": { "type": "number", "description": "Applicable tax rate" },
+        "receiptHeaderNote": { "type": "string", "description": "Receipt header note" },
+        "receiptFooterNote": { "type": "string", "description": "Receipt footer note" },
+        "schemaVersion": { "type": "integer", "description": "Document schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": [
+        "id",
+        "businessId",
+        "code",
+        "name",
+        "category",
+        "locationCity",
+        "address",
+        "phone",
+        "managerName",
+        "status",
+        "terminalId",
+        "taxRatePercent",
+        "schemaVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user identity, role, business membership, and assigned shop IDs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Firebase Auth UID or stable user ID" },
+        "businessId": { "type": "string", "description": "Parent business ID or PLATFORM" },
+        "username": { "type": "string", "description": "Operator handle" },
+        "email": { "type": "string", "format": "email", "description": "Verified account email" },
+        "fullName": { "type": "string", "description": "Operator full name" },
+        "role": { "type": "string", "enum": ["platform_admin", "business_owner", "shop_manager", "cashier"], "description": "Enforced RBAC role" },
+        "roleLabel": { "type": "string", "description": "Human-readable role title" },
+        "assignedShopIds": { "type": "array", "items": { "type": "string" }, "description": "Authorized shop IDs" },
+        "permissions": { "type": "array", "items": { "type": "string" }, "description": "Explicit permission keys" },
+        "status": { "type": "string", "enum": ["active", "suspended"], "description": "Account status" },
+        "schemaVersion": { "type": "integer", "description": "Document schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": [
+        "id",
+        "businessId",
+        "username",
+        "email",
+        "fullName",
+        "role",
+        "roleLabel",
+        "assignedShopIds",
+        "permissions",
+        "status",
+        "schemaVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Shop-scoped product catalogue item and stock balance.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique product ID" },
+        "shopId": { "type": "string", "description": "Owning shop ID" },
+        "businessId": { "type": "string", "description": "Owning business ID" },
+        "categoryId": { "type": "string", "description": "Category ID" },
+        "categoryName": { "type": "string", "description": "Category display name" },
+        "sku": { "type": "string", "description": "Shop-scoped SKU" },
+        "barcode": { "type": "string", "description": "Product barcode" },
+        "name": { "type": "string", "description": "Product name" },
+        "unit": { "type": "string", "description": "Unit of measurement" },
+        "costPriceKobo": { "type": "integer", "description": "Cost price in minor units (kobo)" },
+        "sellingPriceKobo": { "type": "integer", "description": "Selling price in minor units (kobo)" },
+        "stockQuantity": { "type": "integer", "description": "Current stock balance" },
+        "reorderLevel": { "type": "integer", "description": "Low-stock alert threshold" },
+        "isActive": { "type": "boolean", "description": "Whether product is active for sale" },
+        "schemaVersion": { "type": "integer", "description": "Document schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": [
+        "id",
+        "shopId",
+        "businessId",
+        "categoryId",
+        "categoryName",
+        "sku",
+        "barcode",
+        "name",
+        "unit",
+        "costPriceKobo",
+        "sellingPriceKobo",
+        "stockQuantity",
+        "reorderLevel",
+        "isActive",
+        "schemaVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InventoryMovement": {
+      "title": "InventoryMovement",
+      "description": "Immutable stock movement and deduction ledger record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique movement ID" },
+        "shopId": { "type": "string", "description": "Shop ID" },
+        "businessId": { "type": "string", "description": "Business ID" },
+        "productId": { "type": "string", "description": "Product ID" },
+        "productName": { "type": "string", "description": "Product name snapshot" },
+        "productSku": { "type": "string", "description": "Product SKU snapshot" },
+        "type": { "type": "string", "enum": ["restock", "add_stock", "damage_spoilage", "return_in", "audit_correction", "sale_deduction"], "description": "Movement type" },
+        "quantityDelta": { "type": "integer", "description": "Stock quantity change" },
+        "previousQuantity": { "type": "integer", "description": "Stock quantity before movement" },
+        "newQuantity": { "type": "integer", "description": "Stock quantity after movement" },
+        "reason": { "type": "string", "description": "Movement explanation" },
+        "referenceId": { "type": "string", "description": "Optional sale or supply reference ID" },
+        "performedByUserId": { "type": "string", "description": "User ID of operator" },
+        "performedByName": { "type": "string", "description": "Operator display name" },
+        "schemaVersion": { "type": "integer", "description": "Document schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Movement timestamp" }
+      },
+      "required": [
+        "id",
+        "shopId",
+        "businessId",
+        "productId",
+        "productName",
+        "productSku",
+        "type",
+        "quantityDelta",
+        "previousQuantity",
+        "newQuantity",
+        "reason",
+        "performedByUserId",
+        "performedByName",
+        "schemaVersion",
+        "createdAt"
+      ]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Completed POS sale transaction synchronized from a shop terminal.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique sale ID" },
+        "shopId": { "type": "string", "description": "Shop where sale occurred" },
+        "businessId": { "type": "string", "description": "Business where sale occurred" },
+        "receiptNumber": { "type": "string", "description": "Shop receipt number" },
+        "terminalId": { "type": "string", "description": "Source POS terminal ID" },
+        "cashierUserId": { "type": "string", "description": "Cashier user ID" },
+        "cashierName": { "type": "string", "description": "Cashier display name" },
+        "subtotalKobo": { "type": "integer", "description": "Subtotal in minor units" },
+        "discountAmountKobo": { "type": "integer", "description": "Discount in minor units" },
+        "taxRatePercent": { "type": "number", "description": "Tax rate percentage" },
+        "taxAmountKobo": { "type": "integer", "description": "Tax amount in minor units" },
+        "totalAmountKobo": { "type": "integer", "description": "Total amount in minor units" },
+        "amountTenderedKobo": { "type": "integer", "description": "Amount tendered in minor units" },
+        "changeDueKobo": { "type": "integer", "description": "Change due in minor units" },
+        "paymentMethod": { "type": "string", "description": "Payment method used" },
+        "status": { "type": "string", "enum": ["completed", "refunded", "voided"], "description": "Sale status" },
+        "idempotencyKey": { "type": "string", "description": "Operation idempotency key preventing duplicate sales" },
+        "syncAckId": { "type": "string", "description": "Cloud acknowledgement identifier" },
+        "schemaVersion": { "type": "integer", "description": "Document schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Sale creation timestamp" },
+        "syncedAt": { "type": "string", "format": "date-time", "description": "Cloud synchronization timestamp" }
+      },
+      "required": [
+        "id",
+        "shopId",
+        "businessId",
+        "receiptNumber",
+        "terminalId",
+        "cashierUserId",
+        "cashierName",
+        "subtotalKobo",
+        "discountAmountKobo",
+        "taxRatePercent",
+        "taxAmountKobo",
+        "totalAmountKobo",
+        "amountTenderedKobo",
+        "changeDueKobo",
+        "paymentMethod",
+        "status",
+        "idempotencyKey",
+        "schemaVersion",
+        "createdAt",
+        "syncedAt"
+      ]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Shop-scoped customer and credit balance record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Customer ID" },
+        "shopId": { "type": "string", "description": "Shop ID" },
+        "businessId": { "type": "string", "description": "Business ID" },
+        "fullName": { "type": "string", "description": "Customer full name" },
+        "phone": { "type": "string", "description": "Customer phone number" },
+        "email": { "type": "string", "description": "Optional customer email" },
+        "outstandingBalanceKobo": { "type": "integer", "description": "Outstanding debt in minor units" },
+        "status": { "type": "string", "enum": ["active", "cleared", "overdue"], "description": "Account status" },
+        "schemaVersion": { "type": "integer", "description": "Schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp" }
+      },
+      "required": [
+        "id",
+        "shopId",
+        "businessId",
+        "fullName",
+        "phone",
+        "outstandingBalanceKobo",
+        "status",
+        "schemaVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Immutable payment receipt record for sales, invoices, or debt settlements.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Payment ID" },
+        "shopId": { "type": "string", "description": "Shop ID" },
+        "businessId": { "type": "string", "description": "Business ID" },
+        "referenceType": { "type": "string", "enum": ["sale", "invoice", "debt_settlement", "supplier_payment"], "description": "Reference entity type" },
+        "referenceId": { "type": "string", "description": "Referenced sale/invoice ID" },
+        "amountKobo": { "type": "integer", "description": "Payment amount in minor units" },
+        "paymentMethod": { "type": "string", "description": "Payment method" },
+        "recordedByUserId": { "type": "string", "description": "Operator user ID" },
+        "recordedByName": { "type": "string", "description": "Operator display name" },
+        "schemaVersion": { "type": "integer", "description": "Schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Payment timestamp" }
+      },
+      "required": [
+        "id",
+        "shopId",
+        "businessId",
+        "referenceType",
+        "referenceId",
+        "amountKobo",
+        "paymentMethod",
+        "recordedByUserId",
+        "recordedByName",
+        "schemaVersion",
+        "createdAt"
+      ]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Shop-scoped B2B or customer invoice.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Invoice ID" },
+        "shopId": { "type": "string", "description": "Shop ID" },
+        "businessId": { "type": "string", "description": "Business ID" },
+        "invoiceNumber": { "type": "string", "description": "Invoice number" },
+        "customerName": { "type": "string", "description": "Customer name" },
+        "totalAmountKobo": { "type": "integer", "description": "Total amount in minor units" },
+        "amountPaidKobo": { "type": "integer", "description": "Amount paid in minor units" },
+        "status": { "type": "string", "enum": ["draft", "unpaid", "partial", "paid", "cancelled"], "description": "Invoice status" },
+        "createdByUserId": { "type": "string", "description": "Creator user ID" },
+        "schemaVersion": { "type": "integer", "description": "Schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp" }
+      },
+      "required": [
+        "id",
+        "shopId",
+        "businessId",
+        "invoiceNumber",
+        "customerName",
+        "totalAmountKobo",
+        "amountPaidKobo",
+        "status",
+        "createdByUserId",
+        "schemaVersion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SyncOperation": {
+      "title": "SyncOperation",
+      "description": "Idempotent synchronization operation record and server acknowledgement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique operation ID / idempotency key" },
+        "businessId": { "type": "string", "description": "Target business ID" },
+        "shopId": { "type": "string", "description": "Target shop ID" },
+        "entityType": { "type": "string", "enum": ["sale", "product", "category", "inventory_movement", "customer", "invoice", "payment"], "description": "Synchronized entity type" },
+        "entityId": { "type": "string", "description": "Target entity ID" },
+        "operationType": { "type": "string", "enum": ["create", "update", "delete", "adjust"], "description": "Operation type" },
+        "actorUserId": { "type": "string", "description": "Authenticated user ID who submitted the sync" },
+        "outcome": { "type": "string", "enum": ["acknowledged", "conflict_requires_review", "rejected_unauthorized"], "description": "Server outcome" },
+        "ackId": { "type": "string", "description": "Optional server acknowledgement ID" },
+        "conflictReason": { "type": "string", "description": "Optional conflict explanation" },
+        "schemaVersion": { "type": "integer", "description": "Schema version" },
+        "processedAt": { "type": "string", "format": "date-time", "description": "Server processing timestamp" }
+      },
+      "required": [
+        "id",
+        "businessId",
+        "shopId",
+        "entityType",
+        "entityId",
+        "operationType",
+        "actorUserId",
+        "outcome",
+        "schemaVersion",
+        "processedAt"
+      ]
+    },
+    "ProvisioningKey": {
+      "title": "ProvisioningKey",
+      "description": "Idempotency ledger for Platform Administrator business provisioning.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Idempotency key" },
+        "businessId": { "type": "string", "description": "Provisioned business ID" },
+        "ownerUserId": { "type": "string", "description": "Provisioned primary owner UID" },
+        "ownerEmail": { "type": "string", "description": "Provisioned primary owner email" },
+        "firstShopId": { "type": "string", "description": "Provisioned first shop ID" },
+        "provisionedByUid": { "type": "string", "description": "Platform Admin UID" },
+        "schemaVersion": { "type": "integer", "description": "Schema version" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Provisioning timestamp" }
+      },
+      "required": [
+        "id",
+        "businessId",
+        "ownerUserId",
+        "ownerEmail",
+        "firstShopId",
+        "provisionedByUid",
+        "schemaVersion",
+        "createdAt"
+      ]
+    },
+    "AuditEvent": {
+      "title": "AuditEvent",
+      "description": "Immutable security and operational audit log entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Audit event ID" },
+        "businessId": { "type": "string", "description": "Business ID or PLATFORM" },
+        "shopId": { "type": "string", "description": "Shop ID if shop-scoped" },
+        "userId": { "type": "string", "description": "Actor user ID" },
+        "userName": { "type": "string", "description": "Actor display name" },
+        "action": { "type": "string", "description": "Audited action key" },
+        "entityType": { "type": "string", "description": "Affected entity type" },
+        "entityId": { "type": "string", "description": "Affected entity ID" },
+        "detailsJson": { "type": "string", "description": "Sanitized JSON details" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Event timestamp" }
+      },
+      "required": [
+        "id",
+        "businessId",
+        "userId",
+        "userName",
+        "action",
+        "entityType",
+        "entityId",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles containing role, businessId, and assignedShopIds."
+    },
+    "/platform_provisioning_keys/{idempotencyKey}": {
+      "schema": { "$ref": "#/entities/ProvisioningKey" },
+      "description": "Idempotency ledger for Platform Administrator business creation."
+    },
+    "/businesses/{businessId}": {
+      "schema": { "$ref": "#/entities/Business" },
+      "description": "Registered businesses with primary owner binding."
+    },
+    "/businesses/{businessId}/shops/{shopId}": {
+      "schema": { "$ref": "#/entities/Shop" },
+      "description": "Shops belonging to a specific business."
+    },
+    "/businesses/{businessId}/shops/{shopId}/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Shop-isolated product catalogue and inventory balance."
+    },
+    "/businesses/{businessId}/shops/{shopId}/inventory_movements/{movementId}": {
+      "schema": { "$ref": "#/entities/InventoryMovement" },
+      "description": "Shop-isolated immutable stock movement ledger."
+    },
+    "/businesses/{businessId}/shops/{shopId}/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Synchronized POS sales for a specific shop."
+    },
+    "/businesses/{businessId}/shops/{shopId}/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Shop-isolated customer and credit records."
+    },
+    "/businesses/{businessId}/shops/{shopId}/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Shop-isolated payment ledger."
+    },
+    "/businesses/{businessId}/shops/{shopId}/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "Shop-isolated customer invoices."
+    },
+    "/businesses/{businessId}/shops/{shopId}/sync_operations/{operationId}": {
+      "schema": { "$ref": "#/entities/SyncOperation" },
+      "description": "Idempotent synchronization operation ledger for a shop."
+    },
+    "/businesses/{businessId}/audit_events/{eventId}": {
+      "schema": { "$ref": "#/entities/AuditEvent" },
+      "description": "Immutable audit log for business and platform actions."
+    }
+  }
+}

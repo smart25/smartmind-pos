@@ -1,0 +1,873 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.size() >= 3 && email.size() <= 254 && email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$');
+    }
+
+    function isQuarantinedPreFirebaseId(id) {
+      return id in [
+        'biz-0003-u42w',
+        'shop-0005-9i6p',
+        'sync-sale-1792837064449-h1dw',
+        'sync-sale-1792840077667-3knj',
+        'sync-sale-1792840085221-qjdb',
+        'sync-sale-1792840089845-kc84',
+        'sale-1792837064449-h1dw',
+        'sale-1792840077667-3knj',
+        'sale-1792840085221-qjdb',
+        'sale-1792840089845-kc84',
+        'biz-emerald-01',
+        'biz-zenith-02',
+        'shop-vi-01',
+        'shop-ikeja-02',
+        'shop-lekki-03',
+        'shop-abuja-01'
+      ];
+    }
+
+    function isPlatformAdminBusinessSentinel(id) {
+      return id in ['PLATFORM', 'biz-platform-live'];
+    }
+
+    function isBootstrapPlatformAdmin() {
+      return isAuthenticated() && request.auth.token.email == "smartnwokolo@gmail.com";
+    }
+
+    function getUserProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasUserDoc() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasActiveProfile() {
+      return hasUserDoc() &&
+        getUserProfile().status == 'active';
+    }
+
+    function isPlatformAdminProfile(profile) {
+      return profile.status == 'active' &&
+        profile.role == 'platform_admin' &&
+        profile.email == "smartnwokolo@gmail.com";
+    }
+
+    function isPlatformAdmin() {
+      return isBootstrapPlatformAdmin() &&
+        hasUserDoc() &&
+        isPlatformAdminProfile(getUserProfile());
+    }
+
+    function isBusinessOwnerProfile(profile, businessId) {
+      return profile.status == 'active' &&
+        profile.role == 'business_owner' &&
+        profile.businessId == businessId;
+    }
+
+    function isBusinessOwnerOf(businessId) {
+      return hasUserDoc() &&
+        isBusinessOwnerProfile(getUserProfile(), businessId);
+    }
+
+    function isAssignedShopStaffProfile(profile, businessId, shopId, allowedRoles) {
+      return profile.status == 'active' &&
+        profile.businessId == businessId &&
+        (profile.role == 'business_owner' ||
+         (profile.role in allowedRoles && shopId in profile.assignedShopIds));
+    }
+
+    function isAssignedShopManager(businessId, shopId) {
+      return hasUserDoc() &&
+        isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager']) &&
+        getUserProfile().role == 'shop_manager';
+    }
+
+    function isAssignedCashier(businessId, shopId) {
+      return hasUserDoc() &&
+        isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['cashier']) &&
+        getUserProfile().role == 'cashier';
+    }
+
+    // Platform Administrator is explicitly excluded from operational shop data
+    function canAccessShop(businessId, shopId) {
+      return !isQuarantinedPreFirebaseId(businessId) &&
+        !isQuarantinedPreFirebaseId(shopId) &&
+        hasUserDoc() &&
+        isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager', 'cashier']);
+    }
+
+    function canManageShopCatalogue(businessId, shopId) {
+      return !isQuarantinedPreFirebaseId(businessId) &&
+        !isQuarantinedPreFirebaseId(shopId) &&
+        hasUserDoc() &&
+        isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager']);
+    }
+
+    // Granular permission checks (Business Owner of the tenant has full operational authority; staff require explicit permission keys)
+    function profileHasPermission(profile, allowedKeys) {
+      return profile.status == 'active' && (
+        profile.role == 'business_owner' ||
+        (profile.permissions is list && profile.permissions.hasAny(allowedKeys))
+      );
+    }
+
+    function hasAnyUserPermission(allowedKeys) {
+      return hasUserDoc() &&
+        profileHasPermission(getUserProfile(), allowedKeys);
+    }
+
+    function hasSalesPermission() {
+      return hasAnyUserPermission(['process_sales', 'process_sale', 'pos_checkout']);
+    }
+
+    function hasDiscountPermission() {
+      return hasAnyUserPermission(['apply_discounts', 'apply_discount']);
+    }
+
+    function hasRefundOrVoidPermission() {
+      return hasAnyUserPermission(['process_refunds', 'process_returns', 'void_sale']);
+    }
+
+    function hasCataloguePermission() {
+      return hasAnyUserPermission(['manage_products', 'manage_catalogue', 'manage_inventory', 'manage_categories']);
+    }
+
+    function hasInventoryAdjustmentPermission() {
+      return hasAnyUserPermission(['adjust_inventory', 'adjust_stock']);
+    }
+
+    function hasCustomerPermission() {
+      return hasAnyUserPermission(['manage_debt_book', 'manage_customers', 'manage_customers_debt']);
+    }
+
+    function hasInvoicePermission() {
+      return hasAnyUserPermission(['manage_invoices']);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUserProfile(data, userId) {
+      let requiredFields = [
+        'id', 'businessId', 'username', 'email', 'fullName',
+        'role', 'roleLabel', 'assignedShopIds', 'permissions',
+        'status', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      let allowedCashierPerms = [
+        'process_sales', 'process_sale', 'pos_checkout',
+        'manage_invoices', 'manage_debt_book', 'manage_customers',
+        'manage_customers_debt', 'apply_discounts', 'apply_discount'
+      ];
+      let allowedManagerPerms = [
+        'process_sales', 'process_sale', 'pos_checkout',
+        'manage_invoices', 'manage_debt_book', 'manage_customers',
+        'manage_customers_debt', 'apply_discounts', 'apply_discount',
+        'manage_products', 'manage_catalogue', 'manage_inventory',
+        'manage_categories', 'adjust_inventory', 'adjust_stock',
+        'process_refunds', 'process_returns', 'void_sale', 'view_shop_reports'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(requiredFields) &&
+        data.id == userId &&
+        isValidId(data.id) &&
+        isValidId(data.businessId) &&
+        !isQuarantinedPreFirebaseId(data.businessId) &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 80 &&
+        isValidEmail(data.email) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+        data.role in ['platform_admin', 'business_owner', 'shop_manager', 'cashier'] &&
+        data.roleLabel is string && data.roleLabel.size() >= 1 && data.roleLabel.size() <= 100 &&
+        data.assignedShopIds is list && data.assignedShopIds.size() <= 50 &&
+        data.permissions is list && data.permissions.size() <= 30 &&
+        (data.role != 'cashier' || (data.permissions.size() >= 1 && data.permissions.hasOnly(allowedCashierPerms))) &&
+        (data.role != 'shop_manager' || (data.permissions.size() >= 1 && data.permissions.hasOnly(allowedManagerPerms))) &&
+        ((data.role == 'platform_admin' &&
+          isPlatformAdminBusinessSentinel(data.businessId) &&
+          data.assignedShopIds.size() == 0 &&
+          data.email == "smartnwokolo@gmail.com") ||
+         (data.role != 'platform_admin' &&
+          !isPlatformAdminBusinessSentinel(data.businessId))) &&
+        data.status in ['active', 'suspended'] &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.updatedAt is string && data.createdAt.size() <= 50 && data.updatedAt.size() <= 50;
+    }
+
+    function isValidProvisioningKey(data, idempotencyKey) {
+      let requiredFields = [
+        'id', 'businessId', 'ownerUserId', 'ownerEmail',
+        'firstShopId', 'provisionedByUid', 'schemaVersion', 'createdAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(requiredFields) &&
+        data.id == idempotencyKey &&
+        isValidId(data.id) &&
+        isValidId(data.businessId) &&
+        isValidId(data.ownerUserId) &&
+        isValidEmail(data.ownerEmail) &&
+        isValidId(data.firstShopId) &&
+        isValidId(data.provisionedByUid) &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    function isValidBusiness(data, businessId) {
+      let requiredFields = [
+        'id', 'name', 'businessType', 'ownerUserId', 'ownerName',
+        'ownerEmail', 'contactEmail', 'primaryPhone', 'headquartersAddress',
+        'currencyCode', 'currencySymbol', 'defaultTaxRatePercent',
+        'status', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      let allowedFields = [
+        'id', 'name', 'legalName', 'businessType', 'registrationNumber',
+        'taxIdentificationNumber', 'ownerUserId', 'ownerName',
+        'ownerEmail', 'contactEmail', 'primaryPhone', 'headquartersAddress',
+        'currencyCode', 'currencySymbol', 'defaultTaxRatePercent',
+        'status', 'notes', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        data.id == businessId &&
+        isValidId(data.id) &&
+        !isQuarantinedPreFirebaseId(data.id) &&
+        !isPlatformAdminBusinessSentinel(businessId) &&
+        !isPlatformAdminBusinessSentinel(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 140 &&
+        (!('legalName' in data) || (data.legalName is string && data.legalName.size() <= 180)) &&
+        data.businessType is string && data.businessType.size() >= 2 && data.businessType.size() <= 100 &&
+        (!('registrationNumber' in data) || (data.registrationNumber is string && data.registrationNumber.size() <= 60)) &&
+        (!('taxIdentificationNumber' in data) || (data.taxIdentificationNumber is string && data.taxIdentificationNumber.size() <= 60)) &&
+        isValidId(data.ownerUserId) &&
+        data.ownerName is string && data.ownerName.size() >= 2 && data.ownerName.size() <= 120 &&
+        isValidEmail(data.ownerEmail) &&
+        isValidEmail(data.contactEmail) &&
+        data.primaryPhone is string && data.primaryPhone.size() >= 3 && data.primaryPhone.size() <= 40 &&
+        data.headquartersAddress is string && data.headquartersAddress.size() >= 3 && data.headquartersAddress.size() <= 250 &&
+        data.currencyCode is string && data.currencyCode.size() == 3 &&
+        data.currencySymbol is string && data.currencySymbol.size() >= 1 && data.currencySymbol.size() <= 5 &&
+        data.defaultTaxRatePercent is number && data.defaultTaxRatePercent >= 0 && data.defaultTaxRatePercent <= 100 &&
+        data.status in ['active', 'suspended'] &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.updatedAt is string && data.updatedAt.size() <= 50;
+    }
+
+    function isValidShop(data, businessId, shopId) {
+      let requiredFields = [
+        'id', 'businessId', 'code', 'name', 'category',
+        'locationCity', 'address', 'phone', 'managerName',
+        'status', 'terminalId', 'taxRatePercent',
+        'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      let allowedFields = [
+        'id', 'businessId', 'code', 'name', 'category',
+        'locationCity', 'address', 'phone', 'managerName',
+        'status', 'terminalId', 'taxRatePercent',
+        'receiptHeaderNote', 'receiptFooterNote',
+        'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        data.id == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.businessId) &&
+        !isQuarantinedPreFirebaseId(data.id) &&
+        !isQuarantinedPreFirebaseId(data.businessId) &&
+        data.code is string && data.code.size() >= 2 && data.code.size() <= 30 &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 140 &&
+        data.category is string && data.category.size() >= 2 && data.category.size() <= 80 &&
+        data.locationCity is string && data.locationCity.size() >= 1 && data.locationCity.size() <= 80 &&
+        data.address is string && data.address.size() >= 2 && data.address.size() <= 240 &&
+        data.phone is string && data.phone.size() >= 3 && data.phone.size() <= 40 &&
+        data.managerName is string && data.managerName.size() >= 1 && data.managerName.size() <= 120 &&
+        data.status in ['active', 'inactive', 'maintenance'] &&
+        data.terminalId is string && data.terminalId.size() >= 1 && data.terminalId.size() <= 60 &&
+        data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 100 &&
+        (!('receiptHeaderNote' in data) || (data.receiptHeaderNote is string && data.receiptHeaderNote.size() <= 300)) &&
+        (!('receiptFooterNote' in data) || (data.receiptFooterNote is string && data.receiptFooterNote.size() <= 300)) &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.updatedAt is string && data.updatedAt.size() <= 50;
+    }
+
+    function isValidProduct(data, businessId, shopId, productId) {
+      let requiredFields = [
+        'id', 'shopId', 'businessId', 'categoryId', 'categoryName',
+        'sku', 'barcode', 'name', 'unit', 'costPriceKobo',
+        'sellingPriceKobo', 'stockQuantity', 'reorderLevel',
+        'isActive', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(requiredFields) &&
+        data.id == productId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.shopId) &&
+        isValidId(data.businessId) &&
+        isValidId(data.categoryId) &&
+        data.categoryName is string && data.categoryName.size() >= 1 && data.categoryName.size() <= 80 &&
+        data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 64 &&
+        data.barcode is string && data.barcode.size() >= 1 && data.barcode.size() <= 64 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 40 &&
+        data.costPriceKobo is int && data.costPriceKobo >= 0 &&
+        data.sellingPriceKobo is int && data.sellingPriceKobo >= 0 &&
+        data.stockQuantity is int && data.stockQuantity >= 0 &&
+        data.reorderLevel is int && data.reorderLevel >= 0 &&
+        data.isActive is bool &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.updatedAt is string && data.updatedAt.size() <= 50;
+    }
+
+    function isValidInventoryMovement(data, businessId, shopId, movementId) {
+      let requiredFields = [
+        'id', 'shopId', 'businessId', 'productId', 'productName',
+        'productSku', 'type', 'quantityDelta', 'previousQuantity',
+        'newQuantity', 'reason', 'performedByUserId', 'performedByName',
+        'schemaVersion', 'createdAt'
+      ];
+      let allowedFields = [
+        'id', 'shopId', 'businessId', 'productId', 'productName',
+        'productSku', 'type', 'quantityDelta', 'previousQuantity',
+        'newQuantity', 'reason', 'referenceId', 'performedByUserId',
+        'performedByName', 'schemaVersion', 'createdAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        data.id == movementId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.shopId) &&
+        isValidId(data.businessId) &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 160 &&
+        data.productSku is string && data.productSku.size() >= 1 && data.productSku.size() <= 64 &&
+        data.type in ['restock', 'add_stock', 'damage_spoilage', 'return_in', 'audit_correction', 'sale_deduction'] &&
+        data.quantityDelta is int &&
+        data.previousQuantity is int && data.previousQuantity >= 0 &&
+        data.newQuantity is int && data.newQuantity >= 0 &&
+        data.newQuantity == data.previousQuantity + data.quantityDelta &&
+        data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 400 &&
+        (!('referenceId' in data) || isValidId(data.referenceId)) &&
+        isValidId(data.performedByUserId) &&
+        data.performedByName is string && data.performedByName.size() >= 1 && data.performedByName.size() <= 120 &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    function isValidSale(data, businessId, shopId, saleId) {
+      let allowedFields = [
+        'id', 'shopId', 'businessId', 'receiptNumber', 'terminalId',
+        'cashierUserId', 'cashierName', 'subtotalKobo', 'discountAmountKobo',
+        'taxRatePercent', 'taxAmountKobo', 'totalAmountKobo',
+        'amountTenderedKobo', 'changeDueKobo', 'paymentMethod',
+        'status', 'idempotencyKey', 'syncAckId', 'schemaVersion', 'createdAt', 'syncedAt'
+      ];
+      return data.keys().hasOnly(allowedFields) &&
+        ((data.size() == 20 && !('syncAckId' in data)) ||
+         (data.size() == 21 && 'syncAckId' in data && data.syncAckId is string && data.syncAckId.size() <= 128)) &&
+        data.id == saleId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        !isQuarantinedPreFirebaseId(data.id) &&
+        data.receiptNumber is string && data.receiptNumber.size() >= 3 && data.receiptNumber.size() <= 64 &&
+        data.terminalId is string && data.terminalId.size() >= 1 && data.terminalId.size() <= 64 &&
+        isValidId(data.cashierUserId) &&
+        data.cashierName is string && data.cashierName.size() >= 1 && data.cashierName.size() <= 120 &&
+        data.subtotalKobo is int && data.subtotalKobo >= 0 &&
+        data.discountAmountKobo is int && data.discountAmountKobo >= 0 &&
+        data.discountAmountKobo <= data.subtotalKobo &&
+        data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 100 &&
+        data.taxAmountKobo is int && data.taxAmountKobo >= 0 &&
+        data.totalAmountKobo is int && data.totalAmountKobo >= 0 &&
+        data.subtotalKobo - data.discountAmountKobo + data.taxAmountKobo == data.totalAmountKobo &&
+        data.amountTenderedKobo is int && data.amountTenderedKobo >= 0 &&
+        data.changeDueKobo is int && data.changeDueKobo >= 0 &&
+        data.paymentMethod is string && data.paymentMethod.size() >= 2 && data.paymentMethod.size() <= 40 &&
+        (data.paymentMethod == 'credit' ||
+         (data.amountTenderedKobo >= data.totalAmountKobo &&
+          data.changeDueKobo == data.amountTenderedKobo - data.totalAmountKobo)) &&
+        data.status in ['completed', 'refunded', 'voided'] &&
+        data.idempotencyKey is string && data.idempotencyKey.size() >= 4 && data.idempotencyKey.size() <= 128 &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.syncedAt is string && data.syncedAt.size() <= 50;
+    }
+
+    function isValidSaleItem(data, businessId, shopId, saleId, itemId) {
+      let allowedFields = [
+        'id', 'saleId', 'shopId', 'businessId', 'productId',
+        'sku', 'barcode', 'productName', 'unit',
+        'unitPriceKobo', 'costPriceKobo', 'quantity', 'lineTotalKobo',
+        'schemaVersion', 'createdAt'
+      ];
+      return data.keys().hasOnly(allowedFields) &&
+        ((data.size() == 14 && !('costPriceKobo' in data)) ||
+         (data.size() == 15 && 'costPriceKobo' in data && data.costPriceKobo is int && data.costPriceKobo >= 0)) &&
+        data.id == itemId &&
+        data.saleId == saleId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.saleId) &&
+        isValidId(data.productId) &&
+        !isQuarantinedPreFirebaseId(data.saleId) &&
+        data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 64 &&
+        data.barcode is string && data.barcode.size() >= 1 && data.barcode.size() <= 64 &&
+        data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 160 &&
+        data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 40 &&
+        data.unitPriceKobo is int && data.unitPriceKobo >= 0 &&
+        data.quantity is int && data.quantity > 0 &&
+        data.lineTotalKobo is int && data.lineTotalKobo == data.unitPriceKobo * data.quantity &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    function isValidCustomer(data, businessId, shopId, customerId) {
+      let requiredFields = [
+        'id', 'shopId', 'businessId', 'fullName', 'phone',
+        'outstandingBalanceKobo', 'status', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      let allowedFields = [
+        'id', 'shopId', 'businessId', 'fullName', 'phone', 'email',
+        'outstandingBalanceKobo', 'status', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        data.id == customerId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.shopId) &&
+        isValidId(data.businessId) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+        data.phone is string && data.phone.size() >= 3 && data.phone.size() <= 40 &&
+        (!('email' in data) || isValidEmail(data.email)) &&
+        data.outstandingBalanceKobo is int && data.outstandingBalanceKobo >= 0 &&
+        data.status in ['active', 'cleared', 'overdue'] &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.updatedAt is string && data.updatedAt.size() <= 50;
+    }
+
+    function isValidPayment(data, businessId, shopId, paymentId) {
+      let requiredFields = [
+        'id', 'shopId', 'businessId', 'referenceType', 'referenceId',
+        'amountKobo', 'paymentMethod', 'recordedByUserId', 'recordedByName',
+        'schemaVersion', 'createdAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(requiredFields) &&
+        data.id == paymentId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.shopId) &&
+        isValidId(data.businessId) &&
+        data.referenceType in ['sale', 'invoice', 'debt_settlement', 'supplier_payment'] &&
+        isValidId(data.referenceId) &&
+        data.amountKobo is int && data.amountKobo >= 0 &&
+        data.paymentMethod is string && data.paymentMethod.size() >= 2 && data.paymentMethod.size() <= 40 &&
+        isValidId(data.recordedByUserId) &&
+        data.recordedByName is string && data.recordedByName.size() >= 1 && data.recordedByName.size() <= 120 &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    function isValidInvoice(data, businessId, shopId, invoiceId) {
+      let requiredFields = [
+        'id', 'shopId', 'businessId', 'invoiceNumber', 'customerName',
+        'totalAmountKobo', 'amountPaidKobo', 'status', 'createdByUserId',
+        'schemaVersion', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(requiredFields) &&
+        data.id == invoiceId &&
+        data.shopId == shopId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.shopId) &&
+        isValidId(data.businessId) &&
+        data.invoiceNumber is string && data.invoiceNumber.size() >= 3 && data.invoiceNumber.size() <= 64 &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+        data.totalAmountKobo is int && data.totalAmountKobo >= 0 &&
+        data.amountPaidKobo is int && data.amountPaidKobo >= 0 &&
+        data.status in ['draft', 'unpaid', 'partial', 'paid', 'cancelled'] &&
+        isValidId(data.createdByUserId) &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        data.updatedAt is string && data.updatedAt.size() <= 50;
+    }
+
+    function isValidSyncOperation(data, businessId, shopId, operationId) {
+      let requiredFields = [
+        'id', 'businessId', 'shopId', 'entityType', 'entityId',
+        'operationType', 'actorUserId', 'outcome', 'schemaVersion', 'processedAt'
+      ];
+      let allowedFields = [
+        'id', 'businessId', 'shopId', 'entityType', 'entityId',
+        'operationType', 'actorUserId', 'outcome', 'ackId', 'conflictReason', 'schemaVersion', 'processedAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        data.id == operationId &&
+        data.businessId == businessId &&
+        data.shopId == shopId &&
+        isValidId(data.id) &&
+        !isQuarantinedPreFirebaseId(data.id) &&
+        !isQuarantinedPreFirebaseId(data.entityId) &&
+        data.entityType in ['sale', 'product', 'category', 'inventory_movement', 'customer', 'invoice', 'payment'] &&
+        isValidId(data.entityId) &&
+        data.operationType in ['create', 'update', 'delete', 'adjust'] &&
+        isValidId(data.actorUserId) &&
+        data.outcome in ['acknowledged', 'conflict_requires_review', 'rejected_unauthorized'] &&
+        (!('ackId' in data) || (data.ackId is string && data.ackId.size() <= 128)) &&
+        (!('conflictReason' in data) || (data.conflictReason is string && data.conflictReason.size() <= 400)) &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.processedAt is string && data.processedAt.size() <= 50;
+    }
+
+    function isValidAuditEvent(data, businessId, eventId) {
+      let requiredFields = [
+        'id', 'businessId', 'userId', 'userName',
+        'action', 'entityType', 'entityId', 'createdAt'
+      ];
+      let allowedFields = [
+        'id', 'businessId', 'shopId', 'userId', 'userName',
+        'action', 'entityType', 'entityId', 'detailsJson', 'createdAt'
+      ];
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        data.id == eventId &&
+        data.businessId == businessId &&
+        isValidId(data.id) &&
+        isValidId(data.businessId) &&
+        (!('shopId' in data) || isValidId(data.shopId)) &&
+        isValidId(data.userId) &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 120 &&
+        data.action is string && data.action.size() >= 2 && data.action.size() <= 80 &&
+        data.entityType is string && data.entityType.size() >= 2 && data.entityType.size() <= 60 &&
+        isValidId(data.entityId) &&
+        (!('detailsJson' in data) || (data.detailsJson is string && data.detailsJson.size() <= 2000)) &&
+        data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // 1. User Profiles (/users/{userId})
+    match /users/{userId} {
+      allow get: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isPlatformAdmin() ||
+        (hasActiveProfile() && getUserProfile().role == 'business_owner' && resource.data.businessId == getUserProfile().businessId)
+      );
+
+      allow list: if isAuthenticated() && (
+        isPlatformAdmin() ||
+        (hasActiveProfile() && getUserProfile().role == 'business_owner' && resource.data.businessId == getUserProfile().businessId)
+      );
+
+      // Users cannot self-escalate roles; Bootstrap Admin can initialize own active platform_admin profile once; active Platform Admin can provision tenant users (never assigning self as business_owner)
+      allow create: if isValidUserProfile(request.resource.data, userId) && (
+        (isBootstrapPlatformAdmin() &&
+         !exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         userId == request.auth.uid &&
+         request.resource.data.role == 'platform_admin' &&
+         request.resource.data.email == "smartnwokolo@gmail.com" &&
+         request.resource.data.status == 'active') ||
+        (isPlatformAdmin() &&
+         userId != request.auth.uid &&
+         request.resource.data.email != "smartnwokolo@gmail.com" &&
+         request.resource.data.role in ['business_owner', 'shop_manager', 'cashier']) ||
+        (isBusinessOwnerOf(request.resource.data.businessId) &&
+         userId != request.auth.uid &&
+         request.resource.data.email != "smartnwokolo@gmail.com" &&
+         request.resource.data.role in ['shop_manager', 'cashier'])
+      );
+
+      allow update: if isValidUserProfile(request.resource.data, userId) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.businessId == resource.data.businessId && (
+          (isPlatformAdmin() &&
+           userId != request.auth.uid &&
+           request.resource.data.email != "smartnwokolo@gmail.com" &&
+           request.resource.data.role in ['business_owner', 'shop_manager', 'cashier']) ||
+          (isPlatformAdmin() &&
+           userId == request.auth.uid &&
+           request.resource.data.email == "smartnwokolo@gmail.com" &&
+           request.resource.data.role == 'platform_admin' &&
+           request.resource.data.status == 'active') ||
+          (isBusinessOwnerOf(resource.data.businessId) &&
+           resource.data.role in ['shop_manager', 'cashier'] &&
+           request.resource.data.email != "smartnwokolo@gmail.com" &&
+           request.resource.data.role in ['shop_manager', 'cashier'])
+        );
+
+      allow delete: if false;
+    }
+
+    // 2. Platform Provisioning Idempotency Ledger (/platform_provisioning_keys/{idempotencyKey})
+    match /platform_provisioning_keys/{idempotencyKey} {
+      allow get, list: if isPlatformAdmin();
+
+      allow create: if isPlatformAdmin() &&
+        request.resource.data.provisionedByUid == request.auth.uid &&
+        isValidProvisioningKey(request.resource.data, idempotencyKey);
+
+      allow update, delete: if false;
+    }
+
+    // 3. Businesses (/businesses/{businessId})
+    match /businesses/{businessId} {
+      allow get: if isPlatformAdmin() ||
+        (hasActiveProfile() && getUserProfile().businessId == businessId);
+
+      allow list: if isPlatformAdmin();
+
+      // Only Platform Administrators can register businesses and assign the primary owner (cannot assign self as owner)
+      allow create: if isPlatformAdmin() &&
+        request.resource.data.ownerUserId != request.auth.uid &&
+        isValidBusiness(request.resource.data, businessId);
+
+      // Platform Admin can update business & status; Business Owner can update contact/currency settings without changing ownerUserId or status
+      allow update: if isValidBusiness(request.resource.data, businessId) &&
+        request.resource.data.createdAt == resource.data.createdAt && (
+          (isPlatformAdmin() && request.resource.data.ownerUserId != request.auth.uid) ||
+          (isBusinessOwnerOf(businessId) &&
+           request.resource.data.ownerUserId == resource.data.ownerUserId &&
+           request.resource.data.status == resource.data.status)
+        );
+
+      allow delete: if false;
+
+      // 4. Shops (/businesses/{businessId}/shops/{shopId})
+      match /shops/{shopId} {
+        allow get: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+
+        allow list: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+
+        allow create: if (isPlatformAdmin() || isBusinessOwnerOf(businessId)) &&
+          isValidShop(request.resource.data, businessId, shopId);
+
+        allow update: if (isPlatformAdmin() || isBusinessOwnerOf(businessId)) &&
+          isValidShop(request.resource.data, businessId, shopId) &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.businessId == resource.data.businessId;
+
+        allow delete: if false;
+
+        // 5. Shop Products (/businesses/{businessId}/shops/{shopId}/products/{productId})
+        // Platform Admin is explicitly NOT granted access to shop inventory
+        match /products/{productId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if canManageShopCatalogue(businessId, shopId) &&
+            hasCataloguePermission() &&
+            isValidProduct(request.resource.data, businessId, shopId, productId);
+
+          allow update: if canManageShopCatalogue(businessId, shopId) &&
+            hasCataloguePermission() &&
+            isValidProduct(request.resource.data, businessId, shopId, productId) &&
+            request.resource.data.createdAt == resource.data.createdAt;
+
+          allow delete: if isBusinessOwnerOf(businessId);
+        }
+
+        // 6. Shop Inventory Movements (/businesses/{businessId}/shops/{shopId}/inventory_movements/{movementId})
+        match /inventory_movements/{movementId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if request.resource.data.performedByUserId == request.auth.uid &&
+            isValidInventoryMovement(request.resource.data, businessId, shopId, movementId) && (
+              (request.resource.data.type == 'sale_deduction' &&
+               canAccessShop(businessId, shopId) &&
+               hasSalesPermission() &&
+               request.resource.data.quantityDelta < 0 &&
+               ('referenceId' in request.resource.data)) ||
+              (request.resource.data.type == 'return_in' &&
+               canManageShopCatalogue(businessId, shopId) &&
+               (hasInventoryAdjustmentPermission() || hasRefundOrVoidPermission()) &&
+               request.resource.data.quantityDelta > 0) ||
+              (request.resource.data.type in ['restock', 'add_stock', 'damage_spoilage', 'audit_correction'] &&
+               canManageShopCatalogue(businessId, shopId) &&
+               hasInventoryAdjustmentPermission())
+            );
+
+          allow update, delete: if false;
+        }
+
+        // 7. Shop Sales (/businesses/{businessId}/shops/{shopId}/sales/{saleId})
+        // Platform Admin is explicitly NOT granted access to shop sales
+        match /sales/{saleId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if canAccessShop(businessId, shopId) &&
+            hasSalesPermission() &&
+            (request.resource.data.discountAmountKobo == 0 || hasDiscountPermission()) &&
+            request.resource.data.status == 'completed' &&
+            (request.resource.data.cashierUserId == request.auth.uid || getUserProfile().role == 'business_owner') &&
+            isValidSale(request.resource.data, businessId, shopId, saleId);
+
+          allow update: if canAccessShop(businessId, shopId) &&
+            isValidSale(request.resource.data, businessId, shopId, saleId) &&
+            resource.data.status == 'completed' &&
+            (!('syncAckId' in resource.data) || request.resource.data.syncAckId == resource.data.syncAckId) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'syncedAt', 'syncAckId']) && (
+              (request.resource.data.status == 'completed' &&
+               hasSalesPermission()) ||
+              (resource.data.status == 'completed' &&
+               request.resource.data.status in ['refunded', 'voided'] &&
+               getUserProfile().role in ['business_owner', 'shop_manager'] &&
+               hasRefundOrVoidPermission())
+            );
+
+          allow delete: if false;
+
+          // 7a. Sale Line Items (/businesses/{businessId}/shops/{shopId}/sales/{saleId}/items/{itemId})
+          match /items/{itemId} {
+            allow get, list: if canAccessShop(businessId, shopId);
+
+            allow create: if canAccessShop(businessId, shopId) &&
+              hasSalesPermission() &&
+              isValidSaleItem(request.resource.data, businessId, shopId, saleId, itemId);
+
+            allow update, delete: if false;
+          }
+        }
+
+        // 8. Shop Customers (/businesses/{businessId}/shops/{shopId}/customers/{customerId})
+        match /customers/{customerId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if canAccessShop(businessId, shopId) &&
+            hasCustomerPermission() &&
+            isValidCustomer(request.resource.data, businessId, shopId, customerId);
+
+          allow update: if canAccessShop(businessId, shopId) &&
+            hasCustomerPermission() &&
+            isValidCustomer(request.resource.data, businessId, shopId, customerId) &&
+            request.resource.data.createdAt == resource.data.createdAt;
+
+          allow delete: if false;
+        }
+
+        // 9. Shop Payments (/businesses/{businessId}/shops/{shopId}/payments/{paymentId})
+        match /payments/{paymentId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if canAccessShop(businessId, shopId) &&
+            request.resource.data.recordedByUserId == request.auth.uid &&
+            isValidPayment(request.resource.data, businessId, shopId, paymentId) && (
+              (request.resource.data.referenceType == 'sale' && hasSalesPermission()) ||
+              (request.resource.data.referenceType == 'invoice' && hasInvoicePermission()) ||
+              (request.resource.data.referenceType == 'debt_settlement' && hasCustomerPermission()) ||
+              (request.resource.data.referenceType == 'supplier_payment' &&
+               canManageShopCatalogue(businessId, shopId) &&
+               (hasCataloguePermission() || hasInventoryAdjustmentPermission()))
+            );
+
+          allow update, delete: if false;
+        }
+
+        // 10. Shop Invoices (/businesses/{businessId}/shops/{shopId}/invoices/{invoiceId})
+        match /invoices/{invoiceId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if canAccessShop(businessId, shopId) &&
+            hasInvoicePermission() &&
+            request.resource.data.createdByUserId == request.auth.uid &&
+            isValidInvoice(request.resource.data, businessId, shopId, invoiceId);
+
+          allow update: if canAccessShop(businessId, shopId) &&
+            hasInvoicePermission() &&
+            isValidInvoice(request.resource.data, businessId, shopId, invoiceId) &&
+            request.resource.data.createdAt == resource.data.createdAt &&
+            request.resource.data.createdByUserId == resource.data.createdByUserId &&
+            request.resource.data.invoiceNumber == resource.data.invoiceNumber;
+
+          allow delete: if false;
+        }
+
+        // 11. Sync Operations (/businesses/{businessId}/shops/{shopId}/sync_operations/{operationId})
+        match /sync_operations/{operationId} {
+          allow get, list: if canAccessShop(businessId, shopId);
+
+          allow create: if canAccessShop(businessId, shopId) &&
+            request.resource.data.actorUserId == request.auth.uid &&
+            isValidSyncOperation(request.resource.data, businessId, shopId, operationId);
+
+          allow update, delete: if false;
+        }
+      }
+
+      // 12. Audit Events (/businesses/{businessId}/audit_events/{eventId})
+      match /audit_events/{eventId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+
+        allow create: if request.resource.data.userId == request.auth.uid &&
+          isValidAuditEvent(request.resource.data, businessId, eventId) && (
+            isPlatformAdmin() ||
+            (isBusinessOwnerOf(businessId) &&
+             (!('shopId' in request.resource.data) || !isQuarantinedPreFirebaseId(request.resource.data.shopId))) ||
+            (hasActiveProfile() &&
+             getUserProfile().businessId == businessId &&
+             getUserProfile().role in ['shop_manager', 'cashier'] &&
+             'shopId' in request.resource.data &&
+             request.resource.data.shopId in getUserProfile().assignedShopIds &&
+             !isQuarantinedPreFirebaseId(request.resource.data.shopId) &&
+             !(getUserProfile().role == 'cashier' &&
+               request.resource.data.action in [
+                 'business_and_primary_owner_provisioned',
+                 'tenant_status_updated',
+                 'staff_invited',
+                 'user_profile_or_role_updated',
+                 'primary_owner_assigned',
+                 'sale_voided',
+                 'sale_refunded'
+               ]))
+          );
+
+        allow update, delete: if false;
+      }
+
+      // 13. Staff Provisioning Idempotency Ledger (/businesses/{businessId}/staff_provisioning_keys/{idempotencyKey})
+      match /staff_provisioning_keys/{idempotencyKey} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+        allow create, update, delete: if false;
+      }
+
+      // 14. Tenant Subscription & Status Events (/businesses/{businessId}/subscription_events/{eventId})
+      match /subscription_events/{eventId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+        allow create, update, delete: if false;
+      }
+    }
+
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

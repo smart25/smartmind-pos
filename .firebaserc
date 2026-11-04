@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "smartmind-pos-staging",
+    "staging": "smartmind-pos-staging",
+    "production": "gen-lang-client-0985802946"
+  }
+}

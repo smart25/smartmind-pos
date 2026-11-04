@@ -1,0 +1,22 @@
+{
+  "name": "smartmind-pos-functions",
+  "version": "1.0.0",
+  "description": "SmartMind POS Phase 6 Trusted Cloud Functions (2nd Gen) for gen-lang-client-0985802946",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "firebase-functions": "^6.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "typescript": "^5.7.2"
+  },
+  "private": true
+}

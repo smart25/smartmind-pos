@@ -1,0 +1,307 @@
+﻿
+$root = "C:\Users\smart\Desktop\smartmind-pos-validation"
+$testFile = "$root\src\db\indexedDbAdapterCleanup.integration.test.ts"
+
+@'
+import 'fake-indexeddb/auto';
+import { after, before, test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { IndexedDbDatabaseAdapter } from './adapters/indexedDbAdapter';
+import {
+  PRE_FIREBASE_QUARANTINE_REASON,
+  PRE_FIREBASE_TEST_BUSINESS_ID,
+  PRE_FIREBASE_TEST_SHOP_ID,
+  SPECIFIED_PRE_FIREBASE_AUDIT_IDS,
+  SPECIFIED_PRE_FIREBASE_SALE_IDS,
+  SPECIFIED_PRE_FIREBASE_SYNC_IDS,
+} from '../services/liveFirestoreDataService';
+
+import type {
+  DbAuditEvent,
+  DbPayment,
+  DbSale,
+  DbSaleItem,
+  DbSyncQueueEntry,
+} from './schema';
+
+Object.defineProperty(globalThis, 'window', {
+  configurable: true,
+  value: globalThis,
+});
+
+const TEST_DB_NAME = 'smartmind-adapter-cleanup-integration-test';
+const UNRELATED_SALE_ID = 'unrelated-integration-test-sale';
+const UNRELATED_QUEUE_ID = 'unrelated-integration-test-queue';
+const UNRELATED_AUDIT_ID = 'unrelated-integration-test-audit';
+
+const criteria = {
+  expectedBusinessId: PRE_FIREBASE_TEST_BUSINESS_ID,
+  expectedShopId: PRE_FIREBASE_TEST_SHOP_ID,
+  expectedQuarantineReason: PRE_FIREBASE_QUARANTINE_REASON,
+  targetQueueIds: SPECIFIED_PRE_FIREBASE_SYNC_IDS,
+  targetSaleIds: SPECIFIED_PRE_FIREBASE_SALE_IDS,
+  targetAuditEventIds: SPECIFIED_PRE_FIREBASE_AUDIT_IDS,
+};
+
+let adapter: IndexedDbDatabaseAdapter;
+
+function makeSale(id: string, index: number): DbSale {
+  const amount = 150000 + index * 10000;
+
+  return {
+    id,
+    shop_id: PRE_FIREBASE_TEST_SHOP_ID,
+    business_id: PRE_FIREBASE_TEST_BUSINESS_ID,
+    receipt_number: `TEST-RECEIPT-${index}`,
+    terminal_id: 'TEST-TERMINAL',
+    cashier_user_id: 'test-cashier',
+    cashier_name: 'Integration Test',
+    created_at: '2026-10-28T08:00:00.000Z',
+    subtotal_kobo: amount,
+    discount_amount_kobo: 0,
+    tax_rate_percent: 0,
+    tax_amount_kobo: 0,
+    total_amount_kobo: amount,
+    amount_tendered_kobo: amount,
+    change_due_kobo: 0,
+    payment_method: 'cash',
+    status: 'completed',
+    idempotency_key: `test-idem-${id}`,
+    is_synced: 0,
+    sync_conflict_reason: PRE_FIREBASE_QUARANTINE_REASON,
+  };
+}
+
+function makeItem(saleId: string, index: number): DbSaleItem {
+  const amount = 150000 + index * 10000;
+
+  return {
+    id: `test-item-${saleId}`,
+    sale_id: saleId,
+    shop_id: PRE_FIREBASE_TEST_SHOP_ID,
+    business_id: PRE_FIREBASE_TEST_BUSINESS_ID,
+    product_id: 'test-product',
+    sku: 'TEST-SKU',
+    barcode: 'TEST-BARCODE',
+    product_name: 'Synthetic Integration Test Item',
+    unit: 'Unit',
+    unit_price_kobo: amount,
+    cost_price_kobo: 50000,
+    quantity: 1,
+    line_total_kobo: amount,
+  };
+}
+
+function makeQueueEntry(
+  id: string,
+  sale: DbSale,
+): DbSyncQueueEntry {
+  return {
+    id,
+    business_id: PRE_FIREBASE_TEST_BUSINESS_ID,
+    shop_id: PRE_FIREBASE_TEST_SHOP_ID,
+    entity_type: 'sale',
+    entity_id: sale.id,
+    operation_type: 'create',
+    payload_json: JSON.stringify({ sale }),
+    created_at: sale.created_at,
+    retry_count: 0,
+    status: 'quarantined',
+    quarantine_reason: PRE_FIREBASE_QUARANTINE_REASON,
+    quarantined_at: sale.created_at,
+  };
+}
+
+function makePayment(saleId: string, index: number): DbPayment {
+  return {
+    id: `test-payment-${saleId}`,
+    shop_id: PRE_FIREBASE_TEST_SHOP_ID,
+    business_id: PRE_FIREBASE_TEST_BUSINESS_ID,
+    reference_type: 'sale',
+    reference_id: saleId,
+    amount_kobo: 150000 + index * 10000,
+    payment_method: 'cash',
+    recorded_by_user_id: 'test-cashier',
+    recorded_by_name: 'Integration Test',
+    created_at: '2026-10-28T08:00:00.000Z',
+  };
+}
+
+function makeAudit(id: string, saleId: string): DbAuditEvent {
+  return {
+    id,
+    business_id: PRE_FIREBASE_TEST_BUSINESS_ID,
+    shop_id: PRE_FIREBASE_TEST_SHOP_ID,
+    user_id: 'test-system',
+    user_name: 'Integration Test',
+    action: 'sync_entry_quarantined',
+    entity_type: 'sale',
+    entity_id: saleId,
+    created_at: '2026-10-28T08:00:00.000Z',
+  };
+}
+
+async function seedTargets(): Promise<void> {
+  for (let i = 0; i < SPECIFIED_PRE_FIREBASE_SALE_IDS.length; i++) {
+    const saleId = SPECIFIED_PRE_FIREBASE_SALE_IDS[i];
+    const sale = makeSale(saleId, i);
+
+    await adapter.saveSale(sale, [makeItem(saleId, i)]);
+    await adapter.savePayment(makePayment(saleId, i));
+    await adapter.enqueueSync(
+      makeQueueEntry(SPECIFIED_PRE_FIREBASE_SYNC_IDS[i], sale),
+    );
+    await adapter.saveAuditEvent(
+      makeAudit(SPECIFIED_PRE_FIREBASE_AUDIT_IDS[i], saleId),
+    );
+  }
+}
+
+async function seedUnrelatedRecords(): Promise<void> {
+  const sale = makeSale(UNRELATED_SALE_ID, 10);
+
+  await adapter.saveSale(sale, [makeItem(UNRELATED_SALE_ID, 10)]);
+  await adapter.savePayment(makePayment(UNRELATED_SALE_ID, 10));
+  await adapter.enqueueSync(makeQueueEntry(UNRELATED_QUEUE_ID, sale));
+  await adapter.saveAuditEvent(makeAudit(UNRELATED_AUDIT_ID, sale.id));
+}
+
+async function assertTargetsExist(): Promise<void> {
+  for (const id of SPECIFIED_PRE_FIREBASE_SALE_IDS) {
+    assert.ok(await adapter.getSale(id), `Expected sale ${id} to exist`);
+    assert.equal((await adapter.getSaleItems(id)).length, 1);
+    assert.equal((await adapter.getPaymentsForReference('sale', id)).length, 1);
+  }
+
+  const queue = await adapter.getAllSyncQueue(
+    PRE_FIREBASE_TEST_SHOP_ID,
+    PRE_FIREBASE_TEST_BUSINESS_ID,
+  );
+  const audits = await adapter.getAuditEvents(
+    PRE_FIREBASE_TEST_BUSINESS_ID,
+    PRE_FIREBASE_TEST_SHOP_ID,
+    500,
+  );
+
+  for (const id of SPECIFIED_PRE_FIREBASE_SYNC_IDS) {
+    assert.ok(queue.some((entry) => entry.id === id));
+  }
+
+  for (const id of SPECIFIED_PRE_FIREBASE_AUDIT_IDS) {
+    assert.ok(audits.some((event) => event.id === id));
+  }
+}
+
+async function assertUnrelatedRecordsSurvive(): Promise<void> {
+  assert.ok(await adapter.getSale(UNRELATED_SALE_ID));
+
+  assert.equal(
+    (await adapter.getSaleItems(UNRELATED_SALE_ID)).length,
+    1,
+  );
+
+  assert.equal(
+    (
+      await adapter.getPaymentsForReference('sale', UNRELATED_SALE_ID)
+    ).length,
+    1,
+  );
+
+  const queue = await adapter.getAllSyncQueue(
+    PRE_FIREBASE_TEST_SHOP_ID,
+    PRE_FIREBASE_TEST_BUSINESS_ID,
+  );
+
+  assert.ok(queue.some((entry) => entry.id === UNRELATED_QUEUE_ID));
+
+  const audits = await adapter.getAuditEvents(
+    PRE_FIREBASE_TEST_BUSINESS_ID,
+    PRE_FIREBASE_TEST_SHOP_ID,
+    500,
+  );
+
+  assert.ok(audits.some((event) => event.id === UNRELATED_AUDIT_ID));
+}
+
+before(async () => {
+  adapter = new IndexedDbDatabaseAdapter(TEST_DB_NAME);
+  await adapter.initialize();
+
+  assert.equal(
+    adapter.adapterType,
+    'indexeddb-browser-dev',
+    'Test must use IndexedDB, not the memory fallback',
+  );
+
+  await seedTargets();
+  await seedUnrelatedRecords();
+  await assertTargetsExist();
+  await assertUnrelatedRecordsSurvive();
+});
+
+after(async () => {
+  if (adapter) {
+    await adapter.close();
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(TEST_DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () =>
+      reject(new Error('Test database deletion was blocked'));
+  });
+});
+
+test('purges only the four target sales and their linked records', async () => {
+  const result = await adapter.purgeQuarantinedPreFirebaseSales(criteria);
+
+  assert.equal(result.success, true, result.details.join('\n'));
+  assert.equal(result.purgedCounts.sales, 4);
+  assert.equal(result.purgedCounts.syncQueue, 4);
+  assert.equal(result.purgedCounts.saleItems, 4);
+  assert.equal(result.purgedCounts.payments, 4);
+  assert.equal(result.purgedCounts.auditEvents, 4);
+
+  for (const id of SPECIFIED_PRE_FIREBASE_SALE_IDS) {
+    assert.equal(await adapter.getSale(id), null);
+    assert.equal((await adapter.getSaleItems(id)).length, 0);
+    assert.equal((await adapter.getPaymentsForReference('sale', id)).length, 0);
+  }
+
+  const queue = await adapter.getAllSyncQueue(
+    PRE_FIREBASE_TEST_SHOP_ID,
+    PRE_FIREBASE_TEST_BUSINESS_ID,
+  );
+  const audits = await adapter.getAuditEvents(
+    PRE_FIREBASE_TEST_BUSINESS_ID,
+    PRE_FIREBASE_TEST_SHOP_ID,
+    500,
+  );
+
+  for (const id of SPECIFIED_PRE_FIREBASE_SYNC_IDS) {
+    assert.equal(queue.some((entry) => entry.id === id), false);
+  }
+
+  for (const id of SPECIFIED_PRE_FIREBASE_AUDIT_IDS) {
+    assert.equal(audits.some((event) => event.id === id), false);
+  }
+
+  await assertUnrelatedRecordsSurvive();
+});
+
+test('repeated cleanup is idempotent after target records are gone', async () => {
+  const result = await adapter.purgeQuarantinedPreFirebaseSales(criteria);
+
+  assert.equal(result.success, true, result.details.join('\n'));
+  assert.equal(result.isIdempotent, true);
+  assert.equal(result.purgedCounts.sales, 0);
+  assert.equal(result.purgedCounts.syncQueue, 0);
+
+  await assertUnrelatedRecordsSurvive();
+});
+'@ | Set-Content -Path $testFile -Encoding utf8
+
+Write-Host "`nUpdated integration test:"
+Get-Item $testFile | Select-Object FullName, Length
