@@ -3643,7 +3643,7 @@ useEffect(() => {
     if (!activeBusiness || !shopId) return { mergedCount: 0, removedCount: 0 };
 
     const shopProds = products.filter(
-      (p) => p.businessId === activeBusiness.id && p.shopId === shopId
+      (p) => (p.businessId === activeBusiness.id || !p.businessId) && p.shopId === shopId
     );
 
     // Group by Barcode > SKU > normalized Name
@@ -4147,10 +4147,9 @@ useEffect(() => {
       // Look up if product already exists in destination shop by SKU, barcode, or exact name
       const existingDestProd = destProds.find(
         (p) =>
-          p.businessId === transfer.businessId &&
           p.shopId === transfer.destinationShopId &&
-          ((p.sku && item.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
-            (p.barcode && item.barcode && p.barcode.toLowerCase() === item.barcode.toLowerCase()) ||
+          ((p.sku && item.sku && p.sku.trim().toLowerCase() === item.sku.trim().toLowerCase()) ||
+            (p.barcode && item.barcode && p.barcode.trim().toLowerCase() === item.barcode.trim().toLowerCase()) ||
             (p.name && item.productName && p.name.trim().toLowerCase() === item.productName.trim().toLowerCase()))
       );
 
