@@ -34,8 +34,8 @@ interface ShopsManagementPageProps {
   businessShops: Shop[];
   activeShop: Shop;
   businessUsers: User[];
-  onCreateShop: (input: CreateShopInput) => Shop;
-  onUpdateShop: (shopId: string, input: CreateShopInput) => void;
+  onCreateShop: (input: CreateShopInput) => Shop | Promise<Shop>;
+  onUpdateShop: (shopId: string, input: CreateShopInput) => void | Promise<void>;
   onToggleShopStatus: (shopId: string, nextStatus: ShopStatus) => void;
   onSwitchActiveShop: (shopId: string) => void;
 }
@@ -59,14 +59,18 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
   onToggleShopStatus,
   onSwitchActiveShop,
 }) => {
-  const canManageShops = hasPermission(currentUser, 'manage_shops');
+  const canManageShops =
+    currentUser.role === 'platform_admin' ||
+    hasPermission(currentUser, 'manage_shops');
 
-  // Business Owners see all shops in their own business; Shop Managers/Cashiers see only their assigned shops within their business
+  // Business Owners & Platform Admin see all shops in the business; Shop Managers/Cashiers see only their assigned shops
   const visibleShops = useMemo(() => {
     const scopedShops = businessShops.filter(
       (s) => s.businessId === business.id
     );
-    if (currentUser.role === 'business_owner') return scopedShops;
+    if (currentUser.role === 'business_owner' || currentUser.role === 'platform_admin') {
+      return scopedShops;
+    }
     return scopedShops.filter((s) =>
       currentUser.assignedShopIds.includes(s.id)
     );
@@ -216,7 +220,7 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
     setFormOpen(true);
   };
 
-  const handleSubmitShopForm = (e: React.FormEvent) => {
+  const handleSubmitShopForm = async (e: React.FormEvent) => {
     e.preventDefault();
     const payload: CreateShopInput = {
       name: nameInput,
@@ -238,12 +242,12 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
     }
 
     if (editingShop) {
-      onUpdateShop(editingShop.id, payload);
+      await onUpdateShop(editingShop.id, payload);
       setFeedbackBanner(
         `Updated shop "${payload.name.trim()}" (${editingShop.id}) under ${business.name}.`
       );
     } else {
-      const created = onCreateShop(payload);
+      const created = await onCreateShop(payload);
       setFeedbackBanner(
         `Created new shop "${created.name}" (${created.id}) with status Active and initialized an independent shop catalogue.`
       );

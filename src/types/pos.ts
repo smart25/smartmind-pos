@@ -146,6 +146,7 @@ export interface Business {
   defaultTaxRatePercent: number;
   status: BusinessStatus;
   notes?: string;
+  logoUrl?: string;
   createdAt: string;
 }
 
@@ -162,16 +163,20 @@ export interface PrinterDevice {
   id: string;
   name: string;
   driverName?: string;
-  type: 'thermal' | 'laser_inkjet' | 'virtual_pdf';
+  type: 'thermal' | 'laser_inkjet' | 'virtual_pdf' | 'unknown';
   connection: 'usb' | 'network' | 'bluetooth' | 'system_spooler';
-  status: 'ready' | 'offline' | 'busy';
+  status: 'ready' | 'offline' | 'busy' | 'unknown';
   paperFormats: ('80mm' | '58mm' | 'a4')[];
   isDefault?: boolean;
   ipAddress?: string;
 }
 
 export interface ShopPrinterSettings {
+  // Legacy field retained temporarily for backward compatibility.
   defaultPrinterId: string;
+  // Computer-local Windows printer assignments.
+  receiptPrinterId?: string;
+  a4PrinterId?: string;
   receiptPrinterMode: ReceiptPrinterMode;
   allowReceiptReprint: boolean;
   thermalPaperWidth: '80mm' | '58mm';
@@ -180,6 +185,7 @@ export interface ShopPrinterSettings {
   printStoreLogo: boolean;
   headerNote?: string;
   footerNote?: string;
+  autoPrintOnSale?: boolean;
 }
 
 export interface Shop {
@@ -196,12 +202,15 @@ export interface Shop {
   status: ShopStatus;
   terminalId: string;
   taxRatePercent: number;
+  vatEnabled?: boolean;
+  printVatOnReceipt?: boolean;
   receiptHeaderNote: string;
   receiptFooterNote: string;
   createdAt: string;
   /** Prototype indicator of local unsynced records waiting in this shop's queue */
   pendingSyncCount: number;
   lastSyncedAt: string;
+  logoUrl?: string;
   printerSettings?: ShopPrinterSettings;
 }
 
@@ -235,8 +244,11 @@ export interface Product {
   sellingPrice: number;
   stockQuantity: number;
   reorderLevel: number;
+  hasExpiry?: boolean;
+  expiryDate?: string | null;
   taxExempt?: boolean;
   isActive: boolean;
+  createdAt?: string;
   updatedAt: string;
 }
 
@@ -263,7 +275,54 @@ export interface StockAdjustment {
   performedByUserId: string;
   performedByName: string;
   createdAt: string;
-  syncStatus: 'synced_demo' | 'pending_local_queue';
+  syncStatus: 'synced' | 'synced_demo' | 'pending_local_queue';
+  referenceId?: string;
+}
+
+export type ProductTransferStatus = 'pending' | 'completed' | 'rejected' | 'cancelled';
+
+export interface ProductTransferItem {
+  productId: string;
+  productName: string;
+  sku: string;
+  barcode?: string;
+  unit: string;
+  quantity: number;
+  costPrice?: number;
+  sellingPrice?: number;
+  categoryId?: string;
+  categoryName?: string;
+}
+
+export interface ProductTransfer {
+  id: string;
+  transferNumber: string;
+  businessId: string;
+  sourceShopId: string;
+  sourceShopName: string;
+  sourceShopCode?: string;
+  destinationShopId: string;
+  destinationShopName: string;
+  destinationShopCode?: string;
+  items: ProductTransferItem[];
+  totalItems: number;
+  totalQuantity: number;
+  status: ProductTransferStatus;
+  sourceDeducted?: boolean;
+  sourceDeductedAt?: string;
+  notes?: string;
+  initiatedByUserId: string;
+  initiatedByUserName: string;
+  initiatedAt: string;
+  confirmedByUserId?: string;
+  confirmedByUserName?: string;
+  confirmedAt?: string;
+  rejectionReason?: string;
+  rejectedByUserId?: string;
+  rejectedByUserName?: string;
+  rejectedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CartItem {
@@ -518,6 +577,8 @@ export type AppView =
   | 'dashboard'
   | 'pos'
   | 'inventory'
+  | 'product_transfer'
+  | 'expiring_products'
   | 'invoices'
   | 'sales'
   | 'sales_summary'
@@ -545,7 +606,8 @@ export type BusinessWorkspaceTab =
   | 'sales'
   | 'inventory'
   | 'shops'
-  | 'staff';
+  | 'staff'
+  | 'branding';
 
 export type PlatformAdminAuditAction =
   | 'business_registered'

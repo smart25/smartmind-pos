@@ -367,23 +367,23 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
   return (
     <div className="p-6 space-y-6 max-w-[1440px] mx-auto">
-      {/* Demo Data Notice & Report Section Tabs */}
+      {/* Report Section Tabs & Scope Info */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div className="flex items-start gap-2.5">
-            <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
             <div>
               <p className="text-xs font-semibold text-slate-900">
-                Demonstration Reporting Suite · Active Shop: {activeShop.name} (
+                Shop Reporting Suite · Active Shop: {activeShop.name} (
                 {activeShop.code})
               </p>
               <p className="text-xs text-slate-500 mt-0.5">
-                All figures below are generated from Phase 1 demonstration data. Shop-level reports are isolated per shop ID.
+                Official transaction summaries, product performance, and sales analytics isolated per shop ID.
               </p>
             </div>
           </div>
-          <span className="text-xs font-mono text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md self-start lg:self-auto whitespace-nowrap">
-            Demonstration Figures Only
+          <span className="text-xs font-mono text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md self-start lg:self-auto whitespace-nowrap">
+            Business Analytics
           </span>
         </div>
 

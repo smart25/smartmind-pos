@@ -29,6 +29,7 @@ import {
   Check,
   FileSpreadsheet,
   Trash2,
+  Calendar,
 } from 'lucide-react';
 import {
   downloadInventoryCsvTemplate,
@@ -181,6 +182,8 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
       sellingPrice: 0,
       stockQuantity: 10,
       reorderLevel: 5,
+      hasExpiry: false,
+      expiryDate: '',
     }
   );
   const [formError, setFormError] = useState<string | null>(null);
@@ -228,7 +231,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
   const [adjType, setAdjType] = useState<StockAdjustmentType>('restock');
   const [adjQty, setAdjQty] = useState<string>('10');
   const [adjReason, setAdjReason] = useState<string>(
-    'Supplier delivery — GRN Waybill (Demo)'
+    'Supplier delivery — GRN Waybill'
   );
   const [stockAdjNotice, setStockAdjNotice] = useState<string | null>(null);
 
@@ -513,6 +516,8 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
       sellingPrice: 2200,
       stockQuantity: 20,
       reorderLevel: 8,
+      hasExpiry: false,
+      expiryDate: '',
     });
     setFormError(null);
     resetInlineBuilders();
@@ -531,6 +536,8 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
       sellingPrice: product.sellingPrice,
       stockQuantity: product.stockQuantity,
       reorderLevel: product.reorderLevel,
+      hasExpiry: Boolean(product.hasExpiry),
+      expiryDate: product.expiryDate || '',
     });
     setFormError(null);
     resetInlineBuilders();
@@ -606,15 +613,15 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
     setAdjQty('10');
     setModalProductSearchQuery('');
     if (effectiveType === 'restock') {
-      setAdjReason('Supplier delivery — GRN Waybill (Demo)');
+      setAdjReason('Supplier delivery — GRN Waybill');
     } else if (type === 'add_stock') {
-      setAdjReason('Storeroom recount surplus / found inventory (Demo)');
+      setAdjReason('Storeroom recount surplus / found inventory');
     } else if (type === 'damage_spoilage') {
-      setAdjReason('Damaged packaging / spoiled items written off (Demo)');
+      setAdjReason('Damaged packaging / spoiled items written off');
     } else if (type === 'return_in') {
-      setAdjReason('Customer return with receipt — returned to active stock (Demo)');
+      setAdjReason('Customer return with receipt — returned to active stock');
     } else {
-      setAdjReason('Routine inventory count reconciliation (Demo)');
+      setAdjReason('Routine inventory count reconciliation');
     }
     setStockAdjModalOpen(true);
   };
@@ -632,7 +639,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
       effectiveProduct.id,
       adjType,
       parsedQty,
-      adjReason.trim() || 'Manual stock adjustment (Demo)'
+      adjReason.trim() || 'Manual stock adjustment'
     );
     setStockAdjModalOpen(false);
     setAdjustingProduct(null);
@@ -1466,9 +1473,15 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                       <p className="font-semibold text-slate-900 text-sm truncate">
                         {product.name}
                       </p>
-                      <div className="flex items-center gap-2 text-xs text-slate-500 font-mono mt-0.5">
+                      <div className="flex items-center gap-2 text-xs text-slate-500 font-mono mt-0.5 flex-wrap">
                         <span className="font-semibold text-slate-700">{product.sku}</span>
                         {product.barcode && <span>· {product.barcode}</span>}
+                        {product.hasExpiry && product.expiryDate && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                            <Calendar className="w-2.5 h-2.5 text-amber-600" />
+                            Exp: {product.expiryDate}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 shrink-0">
@@ -1564,7 +1577,15 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                         <p className="font-semibold text-slate-900">
                           {product.name}
                         </p>
-                        <p className="text-slate-500">Unit: {product.unit}</p>
+                        <div className="flex items-center gap-2 text-slate-500 flex-wrap">
+                          <span>Unit: {product.unit}</span>
+                          {product.hasExpiry && product.expiryDate && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                              <Calendar className="w-2.5 h-2.5 text-amber-600" />
+                              Exp: {product.expiryDate}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-slate-600">
                         {product.categoryName}
@@ -2713,7 +2734,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                     : `Add New Product to ${shop.name}`}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Scoped strictly to Shop ID: {shop.id} (Demo State)
+                  Scoped strictly to Shop ID: {shop.id}
                 </p>
               </div>
               <button
@@ -3160,6 +3181,92 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                 </div>
               </div>
 
+              {/* Expiration Tracking Toggle & Expiry Date Input */}
+              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <label
+                        htmlFor="prod-expiry-toggle"
+                        className="text-xs font-bold text-slate-900 cursor-pointer"
+                      >
+                        Track Product Expiration Date
+                      </label>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          formState.hasExpiry
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {formState.hasExpiry ? 'ON' : 'OFF'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Enable this toggle for perishable products or items with a manufacturer expiry date.
+                    </p>
+                  </div>
+
+                  {/* Toggle Switch Button */}
+                  <button
+                    id="prod-expiry-toggle"
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(formState.hasExpiry)}
+                    onClick={() => {
+                      setFormState((prev) => ({
+                        ...prev,
+                        hasExpiry: !prev.hasExpiry,
+                        expiryDate: !prev.hasExpiry ? prev.expiryDate || '' : prev.expiryDate,
+                      }));
+                      if (formError) setFormError(null);
+                    }}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:ring-offset-2 ${
+                      formState.hasExpiry ? 'bg-emerald-600' : 'bg-slate-300'
+                    }`}
+                  >
+                    <span className="sr-only">Toggle product expiration date</span>
+                    <span
+                      aria-hidden="true"
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                        formState.hasExpiry ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Conditional Expiry Date Picker when Toggle is ON */}
+                {formState.hasExpiry && (
+                  <div className="pt-2 border-t border-slate-200/80 animate-in fade-in duration-150">
+                    <label
+                      htmlFor="prod-expiry-date-input"
+                      className="block font-semibold text-slate-700 mb-1"
+                    >
+                      Expiration Date <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        id="prod-expiry-date-input"
+                        type="date"
+                        value={formState.expiryDate || ''}
+                        onChange={(e) => {
+                          setFormState((prev) => ({
+                            ...prev,
+                            expiryDate: e.target.value,
+                          }));
+                          if (formError) setFormError(null);
+                        }}
+                        className="w-full pl-9 pr-3 py-2 font-mono text-xs border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:border-emerald-600"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Sets the expiry date for this product batch.
+                    </p>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
@@ -3222,7 +3329,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                   type="button"
                   onClick={() => {
                     setAdjType('restock');
-                    setAdjReason('Supplier delivery — GRN Waybill (Demo)');
+                    setAdjReason('Supplier delivery — GRN Waybill');
                   }}
                   className={`py-2 px-2 rounded-md font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                     adjType === 'restock'
@@ -3237,7 +3344,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                   type="button"
                   onClick={() => {
                     setAdjType('add_stock');
-                    setAdjReason('Storeroom recount surplus / found inventory (Demo)');
+                    setAdjReason('Storeroom recount surplus / found inventory');
                   }}
                   className={`py-2 px-2 rounded-md font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                     adjType === 'add_stock'
@@ -3252,7 +3359,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                   type="button"
                   onClick={() => {
                     setAdjType('damage_spoilage');
-                    setAdjReason('Damaged packaging / spoiled items written off (Demo)');
+                    setAdjReason('Damaged packaging / spoiled items written off');
                   }}
                   className={`py-2 px-2 rounded-md font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                     adjType === 'damage_spoilage'
@@ -3268,7 +3375,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                     type="button"
                     onClick={() => {
                       setAdjType('return_in');
-                      setAdjReason('Customer return with receipt — returned to active stock (Demo)');
+                      setAdjReason('Customer return with receipt — returned to active stock');
                     }}
                     className={`py-2 px-2 rounded-md font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                       adjType === 'return_in'
@@ -3523,7 +3630,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                       <button
                         key={preset}
                         type="button"
-                        onClick={() => setAdjReason(`${preset} (Demo)`)}
+                        onClick={() => setAdjReason(preset)}
                         className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer transition-colors"
                       >
                         {preset}
@@ -3539,7 +3646,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                   <UserIcon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                   <span>Authorized Operator:</span>
                   <strong className="text-slate-800">
-                    {currentUser?.fullName || 'Operator (Demo)'}
+                    {currentUser?.fullName || 'Operator'}
                   </strong>
                 </div>
                 <span className="capitalize text-slate-500 font-mono text-[10px]">

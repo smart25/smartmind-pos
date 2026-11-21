@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   BookOpen,
   UserPlus,
@@ -13,6 +13,9 @@ import {
   CreditCard,
   PlusCircle,
   FileText,
+  FileSpreadsheet,
+  Download,
+  ChevronDown,
   SlidersHorizontal,
   X,
 } from 'lucide-react';
@@ -31,6 +34,12 @@ import {
   formatCurrency,
   validateDebtCustomerInput,
 } from '../utils/posCalculations';
+import { downloadDebtBookReportPdf } from '../utils/pdfGenerator';
+import {
+  downloadDebtCustomersCsv,
+  downloadDebtTransactionsCsv,
+  downloadCustomerStatementCsv,
+} from '../utils/csvGenerator';
 
 interface DebtBookPageProps {
   business: Business;
@@ -105,6 +114,35 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
   );
   const [selectedCustomerIdFilter, setSelectedCustomerIdFilter] =
     useState<string>('all');
+
+  // Report Export Menu State
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [statementMenuCustomerId, setStatementMenuCustomerId] = useState<
+    string | null
+  >(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const statementMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (
+        exportMenuRef.current &&
+        !exportMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowExportMenu(false);
+      }
+      if (
+        statementMenuRef.current &&
+        !statementMenuRef.current.contains(event.target as Node)
+      ) {
+        setStatementMenuCustomerId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+    };
+  }, []);
 
   // Add New Customer Form State
   const [fullName, setFullName] = useState(() => savedDraft?.fullName ?? '');
@@ -217,6 +255,88 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
       );
     });
   }, [shopDebtTransactions, txSearch, txTypeFilter, selectedCustomerIdFilter]);
+
+  const handleExportCustomersPdf = () => {
+    downloadDebtBookReportPdf({
+      business,
+      shop,
+      customers: filteredCustomers,
+      transactions: shopDebtTransactions,
+      reportType: 'customers',
+      symbol: currencySymbol,
+      generatedBy: currentUser.fullName,
+      filterLabel: customerSearch.trim()
+        ? `Search: "${customerSearch}"`
+        : 'All Registered Debtors',
+    });
+  };
+
+  const handleExportCustomersCsv = () => {
+    downloadDebtCustomersCsv({
+      customers: filteredCustomers,
+      business,
+      shop,
+      symbol: currencySymbol,
+    });
+  };
+
+  const handleExportTransactionsPdf = () => {
+    const custName =
+      selectedCustomerIdFilter !== 'all'
+        ? shopDebtCustomers.find((c) => c.id === selectedCustomerIdFilter)
+            ?.fullName
+        : undefined;
+    const filterParts = [
+      txTypeFilter !== 'all' ? `Type: ${txTypeFilter.toUpperCase()}` : null,
+      custName ? `Customer: ${custName}` : null,
+      txSearch.trim() ? `Search: "${txSearch}"` : null,
+    ].filter(Boolean);
+    const filterLabel =
+      filterParts.length > 0 ? filterParts.join(' • ') : 'All Transactions';
+
+    downloadDebtBookReportPdf({
+      business,
+      shop,
+      customers: shopDebtCustomers,
+      transactions: filteredTransactions,
+      reportType: 'transactions',
+      symbol: currencySymbol,
+      generatedBy: currentUser.fullName,
+      filterLabel,
+    });
+  };
+
+  const handleExportTransactionsCsv = () => {
+    downloadDebtTransactionsCsv({
+      transactions: filteredTransactions,
+      business,
+      shop,
+      symbol: currencySymbol,
+    });
+  };
+
+  const handleExportStatementPdf = (customer: DebtCustomer) => {
+    downloadDebtBookReportPdf({
+      business,
+      shop,
+      customers: [customer],
+      transactions: shopDebtTransactions,
+      reportType: 'statement',
+      selectedCustomer: customer,
+      symbol: currencySymbol,
+      generatedBy: currentUser.fullName,
+    });
+  };
+
+  const handleExportStatementCsv = (customer: DebtCustomer) => {
+    downloadCustomerStatementCsv({
+      customer,
+      transactions: shopDebtTransactions,
+      business,
+      shop,
+      symbol: currencySymbol,
+    });
+  };
 
   const handleSaveNewCustomer = (e: React.FormEvent) => {
     e.preventDefault();
@@ -385,6 +505,111 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="relative" ref={exportMenuRef}>
+            <button
+              type="button"
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              aria-label="Generate Report options"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-lg text-xs sm:text-sm font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors cursor-pointer min-h-[40px]"
+            >
+              <Download className="w-4 h-4 text-emerald-600" />
+              <span>Generate Report</span>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+
+            {showExportMenu && (
+              <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-30 divide-y divide-slate-100">
+                <div className="px-3.5 py-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                    Customer Debt Balances
+                  </p>
+                  <div className="space-y-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleExportCustomersPdf();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg text-left text-xs text-slate-700 hover:bg-slate-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4 text-rose-600 shrink-0" />
+                      <div>
+                        <span className="font-semibold text-slate-900 block">
+                          Download PDF
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Balances, limits &amp; status
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleExportCustomersCsv();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg text-left text-xs text-slate-700 hover:bg-slate-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div>
+                        <span className="font-semibold text-slate-900 block">
+                          Export CSV
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Excel / spreadsheet format
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="px-3.5 py-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                    Transactions Ledger
+                  </p>
+                  <div className="space-y-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleExportTransactionsPdf();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg text-left text-xs text-slate-700 hover:bg-slate-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4 text-rose-600 shrink-0" />
+                      <div>
+                        <span className="font-semibold text-slate-900 block">
+                          Download PDF
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Credit &amp; deposit history
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleExportTransactionsCsv();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg text-left text-xs text-slate-700 hover:bg-slate-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div>
+                        <span className="font-semibold text-slate-900 block">
+                          Export CSV
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Excel / spreadsheet format
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={() => {
@@ -904,6 +1129,28 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
                     className="w-full pl-9 pr-3 py-1.5 text-xs sm:text-sm rounded-lg border border-slate-300 focus:border-emerald-600 focus:outline-none"
                   />
                 </div>
+
+                <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={handleExportCustomersPdf}
+                    title="Download Customer Balances Report (PDF)"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 hover:bg-white transition-colors cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-rose-600" />
+                    <span>PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportCustomersCsv}
+                    title="Export Customer Balances to CSV"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 hover:bg-white transition-colors cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>CSV</span>
+                  </button>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => setActiveTab('add_customer')}
@@ -1063,6 +1310,55 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
                                 <CreditCard className="w-3.5 h-3.5 text-emerald-700" />
                                 <span>Record Deposit</span>
                               </button>
+
+                              <div className="relative inline-block text-left">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setStatementMenuCustomerId(
+                                      statementMenuCustomerId === customer.id
+                                        ? null
+                                        : customer.id
+                                    )
+                                  }
+                                  title="Customer Statement of Account"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer"
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-slate-600" />
+                                  <span>Statement</span>
+                                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                                </button>
+
+                                {statementMenuCustomerId === customer.id && (
+                                  <div
+                                    ref={statementMenuRef}
+                                    className="absolute right-0 mt-1 w-44 bg-white rounded-lg shadow-xl border border-slate-200 py-1 z-30 text-left"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleExportStatementPdf(customer);
+                                        setStatementMenuCustomerId(null);
+                                      }}
+                                      className="w-full px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                                    >
+                                      <FileText className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                                      <span>Statement (PDF)</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleExportStatementCsv(customer);
+                                        setStatementMenuCustomerId(null);
+                                      }}
+                                      className="w-full px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                                    >
+                                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                      <span>Statement (CSV)</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -1122,6 +1418,27 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
                     </option>
                   ))}
                 </select>
+
+                <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={handleExportTransactionsPdf}
+                    title="Download Transactions Ledger (PDF)"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 hover:bg-white transition-colors cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-rose-600" />
+                    <span>PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportTransactionsCsv}
+                    title="Export Transactions Ledger to CSV"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 hover:bg-white transition-colors cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>CSV</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1260,6 +1577,27 @@ export const DebtBookPage: React.FC<DebtBookPageProps> = ({
                       : 'Deposit'}
                   </button>
                 ))}
+              </div>
+
+              <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+                <button
+                  type="button"
+                  onClick={handleExportTransactionsPdf}
+                  title="Download Transactions Ledger (PDF)"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 hover:bg-white transition-colors cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-rose-600" />
+                  <span>PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportTransactionsCsv}
+                  title="Export Transactions Ledger to CSV"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 hover:bg-white transition-colors cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>CSV</span>
+                </button>
               </div>
             </div>
           </div>

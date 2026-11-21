@@ -3,6 +3,8 @@ import autoTable from 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import {
   Business,
+  DebtCustomer,
+  DebtTransaction,
   Invoice,
   Product,
   SaleTransaction,
@@ -440,6 +442,7 @@ export function formatPaymentMethodLabel(pm: string): string {
   switch (pm) {
     case 'cash':
       return 'Cash';
+    case 'transfer':
     case 'bank_transfer':
       return 'Bank Transfer';
     case 'pos_card':
@@ -477,6 +480,12 @@ export async function downloadSalesSummaryPdf({
 }: SalesSummaryPdfOptions): Promise<void> {
   const safeShopCode = shop.code.replace(/[^a-zA-Z0-9]/g, '_');
   const safeRange = dateRangeLabel.replace(/[^a-zA-Z0-9]/g, '_');
+
+  // Build lookup map for product units
+  const productUnitMap = new Map<string, string>();
+  products.forEach((p) => {
+    if (p.unit) productUnitMap.set(p.id, p.unit);
+  });
 
   if (reportType === 'staff_summary') {
     const defaultStaffFileName =
@@ -619,7 +628,55 @@ export async function downloadSalesSummaryPdf({
 
     y = Math.max(leftY, rightY) + 5;
 
-    // 3. MAIN TABLE (Aggregated by Staff, "--" for Date & Time, Product Name, Product Type)
+    // 3. MAIN TABLE (Sales Transactions Aggregated Per Receipt)
+    const saleRows = sales.map((sale, idx) => {
+      const saleQuantity =
+        sale.items && sale.items.length > 0
+          ? sale.items.reduce((sum, item) => sum + item.quantity, 0)
+          : 1;
+
+      const itemsSummary =
+        sale.items && sale.items.length > 0
+          ? sale.items
+              .map((item) =>
+                item.quantity > 1
+                  ? `${item.productName} (x${item.quantity})`
+                  : item.productName
+              )
+              .join(', ')
+          : 'General Sale';
+
+      const distinctUnits =
+        sale.items && sale.items.length > 0
+          ? Array.from(
+              new Set(
+                sale.items.map(
+                  (item) =>
+                    item.unit || productUnitMap.get(item.productId) || 'Unit'
+                )
+              )
+            )
+          : ['Unit'];
+
+      const unitDisplay =
+        distinctUnits.length === 1
+          ? distinctUnits[0]
+          : distinctUnits.length > 1
+          ? 'Mixed'
+          : 'Unit';
+
+      return {
+        index: idx + 1,
+        dateTime: sale.createdAt,
+        productName: itemsSummary,
+        unit: unitDisplay,
+        quantity: saleQuantity,
+        amount: sale.totalAmount,
+        paymentMethod: formatPaymentMethodLabel(sale.paymentMethod),
+        staff: sale.cashierName || 'Staff',
+      };
+    });
+
     autoTable(doc, {
       startY: y,
       margin: { left: margin, right: margin, bottom: 15 },
@@ -628,7 +685,7 @@ export async function downloadSalesSummaryPdf({
           '#',
           'Date & Time',
           'Product Name',
-          'Product Type',
+          'Unit of Measurement',
           'Quantity',
           'Amount',
           'Payment Method',
@@ -636,16 +693,16 @@ export async function downloadSalesSummaryPdf({
         ],
       ],
       body:
-        report.staffRows.length > 0
-          ? report.staffRows.map((row) => [
+        saleRows.length > 0
+          ? saleRows.map((row) => [
               row.index,
               row.dateTime,
               row.productName,
-              row.productType,
+              row.unit,
               row.quantity.toLocaleString('en-US'),
               formatPdfCurrency(row.amount, symbol),
               row.paymentMethod,
-              row.staffName,
+              row.staff,
             ])
           : [['--', '--', '--', '--', '0', formatPdfCurrency(0, symbol), '--', 'No sales in period']],
       theme: 'plain',
@@ -708,12 +765,6 @@ export async function downloadSalesSummaryPdf({
   const contentWidth = pageWidth - margin * 2;
   let y = margin;
 
-  // Build lookup map for product units
-  const productUnitMap = new Map<string, string>();
-  products.forEach((p) => {
-    if (p.unit) productUnitMap.set(p.id, p.unit);
-  });
-
   // Colors
   const primaryColor = [5, 150, 105]; // Emerald-600
   const darkSlate = [15, 23, 42]; // Slate-900
@@ -766,25 +817,61 @@ export async function downloadSalesSummaryPdf({
   y += 5;
 
   // ----------------------------------------------------
-  // 2. ITEM DATA & SUMMARY METRICS
+  // 2. SALE DATA & SUMMARY METRICS (Aggregated Per Sale / Receipt)
   // ----------------------------------------------------
-  let itemCounter = 1;
-  const itemizedRows = sales.flatMap((sale) =>
-    sale.items.map((item) => ({
-      index: itemCounter++,
+  const saleRows = sales.map((sale, idx) => {
+    const saleQuantity =
+      sale.items && sale.items.length > 0
+        ? sale.items.reduce((sum, item) => sum + item.quantity, 0)
+        : 1;
+
+    const itemsSummary =
+      sale.items && sale.items.length > 0
+        ? sale.items
+            .map((item) =>
+              item.quantity > 1
+                ? `${item.productName} (x${item.quantity})`
+                : item.productName
+            )
+            .join(', ')
+        : 'General Sale';
+
+    const productNameDisplay = itemsSummary;
+
+    const distinctUnits =
+      sale.items && sale.items.length > 0
+        ? Array.from(
+            new Set(
+              sale.items.map(
+                (item) =>
+                  item.unit || productUnitMap.get(item.productId) || 'Unit'
+              )
+            )
+          )
+        : ['Unit'];
+
+    const unitDisplay =
+      distinctUnits.length === 1
+        ? distinctUnits[0]
+        : distinctUnits.length > 1
+        ? 'Mixed'
+        : 'Unit';
+
+    return {
+      index: idx + 1,
       dateTime: sale.createdAt,
-      productName: item.productName,
-      unit: item.unit || productUnitMap.get(item.productId) || 'Unit',
-      quantity: item.quantity,
-      amount: item.lineTotal,
+      productName: productNameDisplay,
+      unit: unitDisplay,
+      quantity: saleQuantity,
+      amount: sale.totalAmount,
       paymentMethod: formatPaymentMethodLabel(sale.paymentMethod),
       staff: sale.cashierName,
       receiptNumber: sale.receiptNumber,
-    }))
-  );
+    };
+  });
 
   const totalGrossSales = sales.reduce((sum, s) => sum + s.totalAmount, 0);
-  const totalQuantitySold = itemizedRows.reduce((sum, r) => sum + r.quantity, 0);
+  const totalQuantitySold = saleRows.reduce((sum, r) => sum + r.quantity, 0);
 
   const cardWidth = (contentWidth - 12) / 3;
   const cardHeight = 13;
@@ -844,7 +931,7 @@ export async function downloadSalesSummaryPdf({
   // 3. TABLE WITH EXACT HEADERS MATCHING USER ATTACHMENT:
   // # | Date & Time | Product Name | Unit of Measurement | Quantity | Amount | Payment Method | Staff
   // ----------------------------------------------------
-  if (itemizedRows.length === 0) {
+  if (saleRows.length === 0) {
     doc.setFillColor(lightBg[0], lightBg[1], lightBg[2]);
     doc.roundedRect(margin, y, contentWidth, 22, 2, 2, 'F');
     doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
@@ -989,7 +1076,7 @@ export async function downloadSalesSummaryPdf({
             'Staff',
           ],
         ],
-        body: itemizedRows.map((r) => [
+        body: saleRows.map((r) => [
           r.index,
           r.dateTime,
           r.productName,
@@ -1516,5 +1603,653 @@ export async function downloadSuppliersReportPdf({
   const safeRange = dateRangeLabel.replace(/[^a-zA-Z0-9]/g, '_');
   const defaultName = `Supplier_Report_${safeShopCode}_${safeSupplier}${safeProduct}_${safeRange}.pdf`;
   doc.save(fileName || defaultName);
+}
+
+export interface DebtBookReportPdfOptions {
+  business: Business;
+  shop: Shop;
+  customers: DebtCustomer[];
+  transactions: DebtTransaction[];
+  reportType?: 'customers' | 'transactions' | 'statement';
+  selectedCustomer?: DebtCustomer | null;
+  symbol?: string;
+  generatedBy?: string;
+  filterLabel?: string;
+  fileName?: string;
+}
+
+/**
+ * Downloads a high-fidelity vector PDF for the Debt Book:
+ * - 'customers': Customer Balances & Credit Limits Summary
+ * - 'transactions': Complete Credit & Deposit Transactions Ledger
+ * - 'statement': Detailed Statement of Account for an individual customer
+ */
+export async function downloadDebtBookReportPdf({
+  business,
+  shop,
+  customers,
+  transactions,
+  reportType = 'customers',
+  selectedCustomer = null,
+  symbol = '₦',
+  generatedBy,
+  filterLabel,
+  fileName,
+}: DebtBookReportPdfOptions): Promise<void> {
+  const isStatement = reportType === 'statement' && !!selectedCustomer;
+  const isTransactions = reportType === 'transactions';
+
+  const doc = new jsPDF({
+    orientation: isStatement ? 'portrait' : 'landscape',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 14;
+  const contentWidth = pageWidth - margin * 2;
+  let y = margin;
+
+  // Colors
+  const primaryColor = [5, 150, 105]; // Emerald-600
+  const darkSlate = [15, 23, 42]; // Slate-900
+  const lightBg = [248, 250, 252]; // Slate-50
+  const textMuted = [100, 116, 139]; // Slate-500
+  const borderColor = [226, 232, 240]; // Slate-200
+
+  // ----------------------------------------------------
+  // 1. HEADER SECTION
+  // ----------------------------------------------------
+  doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+  doc.roundedRect(margin, y, 10, 10, 2, 2, 'F');
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text('SM', margin + 2.2, y + 6.8);
+
+  doc.setTextColor(darkSlate[0], darkSlate[1], darkSlate[2]);
+  doc.setFontSize(13);
+  doc.text(business.legalName || business.name, margin + 13, y + 6);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+  doc.text(
+    `${shop.name} (${shop.code}) • ${shop.address}, ${shop.locationCity} • Tel: ${shop.phone}`,
+    margin + 13,
+    y + 10.5
+  );
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(isStatement ? 13 : 15);
+  doc.setTextColor(darkSlate[0], darkSlate[1], darkSlate[2]);
+
+  const reportTitle = isStatement
+    ? 'STATEMENT OF ACCOUNT'
+    : isTransactions
+    ? 'DEBT TRANSACTIONS LEDGER'
+    : 'CUSTOMER DEBT BALANCES REPORT';
+
+  doc.text(reportTitle, pageWidth - margin, y + 5.5, { align: 'right' });
+
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+  const todayLabel = new Date().toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+  doc.text(`Generated: ${todayLabel}`, pageWidth - margin, y + 10.5, {
+    align: 'right',
+  });
+
+  if (filterLabel || isStatement) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+    const filterSub = isStatement
+      ? `Customer: ${selectedCustomer!.fullName} (${selectedCustomer!.phone})`
+      : `Filter: ${filterLabel || 'All Records'}`;
+    doc.text(filterSub, pageWidth - margin, y + 15, { align: 'right' });
+  }
+
+  y += 18;
+
+  // Divider Line
+  doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+  doc.setLineWidth(0.4);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 5;
+
+  const drawFooter = () => {
+    const totalPages = doc.getNumberOfPages();
+    const footerY = pageHeight - 6.5;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+    const footerLabel = isStatement
+      ? `Customer: ${selectedCustomer!.fullName}`
+      : `Shop: ${shop.name}`;
+    doc.text(
+      `SmartMind POS • Debt Book • ${footerLabel}${
+        generatedBy ? ` • Generated by ${generatedBy}` : ''
+      }`,
+      margin,
+      footerY
+    );
+    doc.text(
+      `Page ${doc.getNumberOfPages()} of ${totalPages}`,
+      pageWidth - margin,
+      footerY,
+      { align: 'right' }
+    );
+  };
+
+  // ----------------------------------------------------
+  // 2. METRIC CARDS OR CUSTOMER PROFILE
+  // ----------------------------------------------------
+  if (isStatement && selectedCustomer) {
+    // Statement Customer Card
+    doc.setFillColor(lightBg[0], lightBg[1], lightBg[2]);
+    doc.roundedRect(margin, y, contentWidth, 22, 2, 2, 'F');
+    doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+    doc.roundedRect(margin, y, contentWidth, 22, 2, 2, 'D');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(darkSlate[0], darkSlate[1], darkSlate[2]);
+    doc.text(selectedCustomer.fullName, margin + 4, y + 6);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+    doc.text(`Phone: ${selectedCustomer.phone}`, margin + 4, y + 11.5);
+    if (selectedCustomer.notes) {
+      doc.text(`Notes: ${selectedCustomer.notes}`, margin + 4, y + 16.5);
+    }
+
+    // Right side numbers
+    const colRight = pageWidth - margin - 4;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+    doc.text('OUTSTANDING BALANCE DUE', colRight, y + 6, { align: 'right' });
+
+    doc.setFontSize(12);
+    doc.setTextColor(
+      selectedCustomer.balanceRemaining > 0 ? 225 : 5,
+      selectedCustomer.balanceRemaining > 0 ? 29 : 150,
+      selectedCustomer.balanceRemaining > 0 ? 72 : 105
+    );
+    doc.text(
+      formatPdfCurrency(selectedCustomer.balanceRemaining, symbol),
+      colRight,
+      y + 12,
+      { align: 'right' }
+    );
+
+    doc.setFontSize(7.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+    doc.text(
+      `Total Credit: ${formatPdfCurrency(
+        selectedCustomer.totalCredit,
+        symbol
+      )}  |  Total Paid: ${formatPdfCurrency(
+        selectedCustomer.amountPaid,
+        symbol
+      )}`,
+      colRight,
+      y + 17,
+      { align: 'right' }
+    );
+
+    y += 28;
+  } else if (!isTransactions) {
+    // Customers Summary Cards
+    const totalCredit = customers.reduce((s, c) => s + c.totalCredit, 0);
+    const totalPaid = customers.reduce((s, c) => s + c.amountPaid, 0);
+    const totalBalance = customers.reduce((s, c) => s + c.balanceRemaining, 0);
+    const debtorsCount = customers.filter((c) => c.balanceRemaining > 0).length;
+
+    const cardWidth = (contentWidth - 15) / 4;
+    const cardHeight = 14;
+
+    const renderCard = (
+      x: number,
+      title: string,
+      mainText: string,
+      subText: string,
+      accentColor?: number[]
+    ) => {
+      doc.setFillColor(lightBg[0], lightBg[1], lightBg[2]);
+      doc.roundedRect(x, y, cardWidth, cardHeight, 1.5, 1.5, 'F');
+      doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+      doc.roundedRect(x, y, cardWidth, cardHeight, 1.5, 1.5, 'D');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.8);
+      doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+      doc.text(title, x + 3.5, y + 4.3);
+
+      doc.setFontSize(10);
+      if (accentColor) {
+        doc.setTextColor(accentColor[0], accentColor[1], accentColor[2]);
+      } else {
+        doc.setTextColor(darkSlate[0], darkSlate[1], darkSlate[2]);
+      }
+      doc.text(mainText, x + 3.5, y + 9);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.8);
+      doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+      doc.text(subText, x + 3.5, y + 12.3);
+    };
+
+    renderCard(
+      margin,
+      'TOTAL CREDIT ISSUED',
+      formatPdfCurrency(totalCredit, symbol),
+      `Across ${customers.length} customer records`
+    );
+    renderCard(
+      margin + cardWidth + 5,
+      'TOTAL DEPOSITS PAID',
+      formatPdfCurrency(totalPaid, symbol),
+      'Customer repayments & deposits',
+      [5, 150, 105]
+    );
+    renderCard(
+      margin + (cardWidth + 5) * 2,
+      'TOTAL BALANCE REMAINING',
+      formatPdfCurrency(totalBalance, symbol),
+      `${debtorsCount} customer${debtorsCount === 1 ? '' : 's'} with active debt`,
+      [225, 29, 72]
+    );
+    renderCard(
+      margin + (cardWidth + 5) * 3,
+      'REGISTERED CUSTOMERS',
+      `${customers.length} Customers`,
+      `${customers.filter((c) => c.creditLimitEnabled).length} with credit limits`
+    );
+
+    y += cardHeight + 6;
+  } else {
+    // Transactions Summary Cards
+    const creditTxs = transactions.filter((t) => t.type === 'credit');
+    const depositTxs = transactions.filter((t) => t.type === 'deposit');
+    const totalCreditAmount = creditTxs.reduce((s, t) => s + t.amount, 0);
+    const totalDepositAmount = depositTxs.reduce((s, t) => s + t.amount, 0);
+    const netDifference = totalCreditAmount - totalDepositAmount;
+
+    const cardWidth = (contentWidth - 10) / 3;
+    const cardHeight = 14;
+
+    const renderCard = (
+      x: number,
+      title: string,
+      mainText: string,
+      subText: string,
+      accentColor?: number[]
+    ) => {
+      doc.setFillColor(lightBg[0], lightBg[1], lightBg[2]);
+      doc.roundedRect(x, y, cardWidth, cardHeight, 1.5, 1.5, 'F');
+      doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+      doc.roundedRect(x, y, cardWidth, cardHeight, 1.5, 1.5, 'D');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.8);
+      doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+      doc.text(title, x + 3.5, y + 4.3);
+
+      doc.setFontSize(10);
+      if (accentColor) {
+        doc.setTextColor(accentColor[0], accentColor[1], accentColor[2]);
+      } else {
+        doc.setTextColor(darkSlate[0], darkSlate[1], darkSlate[2]);
+      }
+      doc.text(mainText, x + 3.5, y + 9);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.8);
+      doc.setTextColor(textMuted[0], textMuted[1], textMuted[2]);
+      doc.text(subText, x + 3.5, y + 12.3);
+    };
+
+    renderCard(
+      margin,
+      'TOTAL CREDIT PURCHASES',
+      formatPdfCurrency(totalCreditAmount, symbol),
+      `${creditTxs.length} credit transactions`
+    );
+    renderCard(
+      margin + cardWidth + 5,
+      'TOTAL DEPOSITS & REPAYMENTS',
+      formatPdfCurrency(totalDepositAmount, symbol),
+      `${depositTxs.length} deposit transactions`,
+      [5, 150, 105]
+    );
+    renderCard(
+      margin + (cardWidth + 5) * 2,
+      'NET OUTSTANDING CHANGE',
+      formatPdfCurrency(netDifference, symbol),
+      netDifference >= 0 ? 'Net increase in debt' : 'Net reduction in debt',
+      netDifference > 0 ? [225, 29, 72] : [5, 150, 105]
+    );
+
+    y += cardHeight + 6;
+  }
+
+  // ----------------------------------------------------
+  // 3. TABLES SECTION
+  // ----------------------------------------------------
+  if (isStatement && selectedCustomer) {
+    const custTxs = [...transactions]
+      .filter((t) => t.customerId === selectedCustomer.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    let runningBal = 0;
+    const bodyRows = custTxs.map((tx, idx) => {
+      const isCredit = tx.type === 'credit';
+      if (isCredit) {
+        runningBal += tx.amount;
+      } else {
+        runningBal -= tx.amount;
+      }
+      return [
+        idx + 1,
+        tx.createdAt,
+        tx.reference,
+        isCredit ? 'Credit Purchase' : 'Deposit / Payment',
+        isCredit ? formatPdfCurrency(tx.amount, symbol) : '—',
+        !isCredit ? formatPdfCurrency(tx.amount, symbol) : '—',
+        formatPdfCurrency(runningBal, symbol),
+        tx.paymentMethod ? formatPaymentMethodLabel(tx.paymentMethod) : '—',
+        tx.recordedByName || 'Staff',
+      ];
+    });
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: margin, right: margin, bottom: 12 },
+      head: [
+        [
+          '#',
+          'Date & Time',
+          'Reference',
+          'Description',
+          'Credit (Debt)',
+          'Payment (Deposit)',
+          'Balance',
+          'Method',
+          'Recorded By',
+        ],
+      ],
+      body: bodyRows,
+      foot: [
+        [
+          'Total',
+          `${custTxs.length} Transactions`,
+          '',
+          '',
+          formatPdfCurrency(selectedCustomer.totalCredit, symbol),
+          formatPdfCurrency(selectedCustomer.amountPaid, symbol),
+          formatPdfCurrency(selectedCustomer.balanceRemaining, symbol),
+          '',
+          '',
+        ],
+      ],
+      theme: 'grid',
+      styles: {
+        font: 'helvetica',
+        fontSize: 7.5,
+        cellPadding: { top: 2.2, right: 2.5, bottom: 2.2, left: 2.5 },
+        textColor: [15, 23, 42],
+        lineColor: [226, 232, 240],
+        lineWidth: 0.2,
+      },
+      headStyles: {
+        fillColor: [248, 250, 252],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        lineWidth: 0.3,
+        lineColor: [203, 213, 225],
+      },
+      footStyles: {
+        fillColor: [241, 245, 249],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        lineWidth: 0.3,
+        lineColor: [203, 213, 225],
+      },
+      alternateRowStyles: {
+        fillColor: [253, 254, 255],
+      },
+      columnStyles: {
+        0: { cellWidth: 8, halign: 'center' },
+        1: { cellWidth: 26, halign: 'left' },
+        2: { cellWidth: 22, halign: 'left' },
+        3: { cellWidth: 26, halign: 'left' },
+        4: { cellWidth: 20, halign: 'right' },
+        5: { cellWidth: 20, halign: 'right' },
+        6: { cellWidth: 22, halign: 'right' },
+        7: { cellWidth: 16, halign: 'center' },
+        8: { cellWidth: 'auto', halign: 'left' },
+      },
+      didDrawPage: drawFooter,
+    });
+  } else if (!isTransactions) {
+    // Customers Summary Table
+    const totalCredit = customers.reduce((s, c) => s + c.totalCredit, 0);
+    const totalPaid = customers.reduce((s, c) => s + c.amountPaid, 0);
+    const totalBalance = customers.reduce((s, c) => s + c.balanceRemaining, 0);
+
+    const bodyRows = customers.map((c, idx) => {
+      const isSettled = c.balanceRemaining <= 0;
+      const isOverLimit =
+        c.creditLimitEnabled &&
+        c.creditLimitAmount > 0 &&
+        c.balanceRemaining > c.creditLimitAmount;
+      const statusLabel = isSettled
+        ? 'Settled'
+        : isOverLimit
+        ? 'Over Limit'
+        : 'Active Balance';
+
+      return [
+        idx + 1,
+        c.fullName,
+        c.phone,
+        c.creditLimitEnabled && c.creditLimitAmount > 0
+          ? formatPdfCurrency(c.creditLimitAmount, symbol)
+          : 'No Limit',
+        formatPdfCurrency(c.totalCredit, symbol),
+        formatPdfCurrency(c.amountPaid, symbol),
+        formatPdfCurrency(c.balanceRemaining, symbol),
+        statusLabel,
+        c.notes || '—',
+      ];
+    });
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: margin, right: margin, bottom: 12 },
+      head: [
+        [
+          '#',
+          'Customer Name',
+          'Phone Number',
+          'Credit Limit',
+          'Total Credit',
+          'Amount Paid',
+          'Balance Remaining',
+          'Account Status',
+          'Notes',
+        ],
+      ],
+      body: bodyRows,
+      foot: [
+        [
+          'Total',
+          `${customers.length} Customers`,
+          '',
+          '',
+          formatPdfCurrency(totalCredit, symbol),
+          formatPdfCurrency(totalPaid, symbol),
+          formatPdfCurrency(totalBalance, symbol),
+          '',
+          '',
+        ],
+      ],
+      theme: 'grid',
+      styles: {
+        font: 'helvetica',
+        fontSize: 7.5,
+        cellPadding: { top: 2.2, right: 2.5, bottom: 2.2, left: 2.5 },
+        textColor: [15, 23, 42],
+        lineColor: [226, 232, 240],
+        lineWidth: 0.2,
+      },
+      headStyles: {
+        fillColor: [248, 250, 252],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        lineWidth: 0.3,
+        lineColor: [203, 213, 225],
+      },
+      footStyles: {
+        fillColor: [241, 245, 249],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        lineWidth: 0.3,
+        lineColor: [203, 213, 225],
+      },
+      alternateRowStyles: {
+        fillColor: [253, 254, 255],
+      },
+      columnStyles: {
+        0: { cellWidth: 10, halign: 'center' },
+        1: { cellWidth: 48, halign: 'left' },
+        2: { cellWidth: 28, halign: 'left' },
+        3: { cellWidth: 28, halign: 'right' },
+        4: { cellWidth: 32, halign: 'right' },
+        5: { cellWidth: 32, halign: 'right' },
+        6: { cellWidth: 34, halign: 'right' },
+        7: { cellWidth: 26, halign: 'center' },
+        8: { cellWidth: 'auto', halign: 'left' },
+      },
+      didDrawPage: drawFooter,
+    });
+  } else {
+    // Transactions Ledger Table
+    const totalCreditAmount = transactions
+      .filter((t) => t.type === 'credit')
+      .reduce((s, t) => s + t.amount, 0);
+    const totalDepositAmount = transactions
+      .filter((t) => t.type === 'deposit')
+      .reduce((s, t) => s + t.amount, 0);
+
+    const bodyRows = transactions.map((tx, idx) => [
+      idx + 1,
+      tx.createdAt,
+      tx.reference,
+      tx.customerName,
+      tx.customerPhone,
+      tx.type === 'credit' ? 'Credit' : 'Deposit',
+      formatPdfCurrency(tx.amount, symbol),
+      tx.paymentMethod ? formatPaymentMethodLabel(tx.paymentMethod) : 'Credit',
+      tx.recordedByName || 'Staff',
+      tx.notes || '—',
+    ]);
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: margin, right: margin, bottom: 12 },
+      head: [
+        [
+          '#',
+          'Date & Time',
+          'Reference',
+          'Customer Name',
+          'Phone',
+          'Type',
+          'Amount',
+          'Payment Method',
+          'Staff',
+          'Notes',
+        ],
+      ],
+      body: bodyRows,
+      foot: [
+        [
+          'Total',
+          `${transactions.length} Records`,
+          '',
+          '',
+          '',
+          '',
+          `Credit: ${formatPdfCurrency(
+            totalCreditAmount,
+            symbol
+          )} | Deposit: ${formatPdfCurrency(totalDepositAmount, symbol)}`,
+          '',
+          '',
+          '',
+        ],
+      ],
+      theme: 'grid',
+      styles: {
+        font: 'helvetica',
+        fontSize: 7.5,
+        cellPadding: { top: 2.2, right: 2.5, bottom: 2.2, left: 2.5 },
+        textColor: [15, 23, 42],
+        lineColor: [226, 232, 240],
+        lineWidth: 0.2,
+      },
+      headStyles: {
+        fillColor: [248, 250, 252],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        lineWidth: 0.3,
+        lineColor: [203, 213, 225],
+      },
+      footStyles: {
+        fillColor: [241, 245, 249],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        lineWidth: 0.3,
+        lineColor: [203, 213, 225],
+      },
+      alternateRowStyles: {
+        fillColor: [253, 254, 255],
+      },
+      columnStyles: {
+        0: { cellWidth: 10, halign: 'center' },
+        1: { cellWidth: 32, halign: 'left' },
+        2: { cellWidth: 26, halign: 'left' },
+        3: { cellWidth: 38, halign: 'left' },
+        4: { cellWidth: 26, halign: 'left' },
+        5: { cellWidth: 18, halign: 'center' },
+        6: { cellWidth: 26, halign: 'right' },
+        7: { cellWidth: 24, halign: 'center' },
+        8: { cellWidth: 26, halign: 'left' },
+        9: { cellWidth: 'auto', halign: 'left' },
+      },
+      didDrawPage: drawFooter,
+    });
+  }
+
+  const safeShopCode = shop.code.replace(/[^a-zA-Z0-9]/g, '_');
+  const safeDate = new Date().toISOString().slice(0, 10);
+  const defaultDocName = isStatement
+    ? `Debt_Statement_${safeShopCode}_${selectedCustomer!.fullName.replace(/[^a-zA-Z0-9]/g, '_')}_${safeDate}.pdf`
+    : isTransactions
+    ? `Debt_Transactions_${safeShopCode}_${safeDate}.pdf`
+    : `Debt_Customer_Balances_${safeShopCode}_${safeDate}.pdf`;
+
+  doc.save(fileName || defaultDocName);
 }
 

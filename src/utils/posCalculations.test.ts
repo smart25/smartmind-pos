@@ -36,6 +36,7 @@ import {
   formatReportDateRangeDmy,
   isSyntheticOwnerUserId,
   resolveBusinessOwnerAuthState,
+  validateProductInput,
 } from './posCalculations';
 import {
   User,
@@ -1631,5 +1632,89 @@ test('Business Owner Auth Helpers: isSyntheticOwnerUserId and resolveBusinessOwn
   assert.equal(disabledState.canRepairAuth, false);
   assert.equal(disabledState.canSendPasswordSetupEmail, false);
   assert.equal(disabledState.canResendPasswordSetupEmail, false);
+});
+
+test('validateProductInput accurately validates product creation, duplicate SKU/barcode, and expiry date toggle', () => {
+  const existingProducts: Product[] = [
+    {
+      id: 'prod-001',
+      shopId: 'shop-001',
+      businessId: 'biz-001',
+      sku: 'SKU-MILK-01',
+      barcode: '61599000101',
+      name: 'Peak Milk 400g',
+      categoryId: 'cat-01',
+      categoryName: 'Groceries',
+      unit: 'Tin',
+      costPrice: 2000,
+      sellingPrice: 2500,
+      stockQuantity: 50,
+      reorderLevel: 10,
+      hasExpiry: true,
+      expiryDate: '2027-12-31',
+      isActive: true,
+      updatedAt: '2026-11-16T10:00:00Z',
+    },
+  ];
+
+  // 1. Non-expiring product is valid
+  const nonExpiring = validateProductInput(
+    {
+      name: 'Nail Hammer 500g',
+      sku: 'SKU-TOOL-01',
+      barcode: '61599000201',
+      categoryId: 'cat-02',
+      unit: 'Piece',
+      costPrice: 3000,
+      sellingPrice: 4200,
+      stockQuantity: 15,
+      reorderLevel: 3,
+      hasExpiry: false,
+    },
+    existingProducts
+  );
+  assert.equal(nonExpiring.valid, true);
+
+  // 2. Expiry toggle enabled without expiration date is rejected
+  const missingExpiryDate = validateProductInput(
+    {
+      name: 'Fresh Yogurt 500ml',
+      sku: 'SKU-DAIRY-01',
+      barcode: '61599000301',
+      categoryId: 'cat-01',
+      unit: 'Bottle',
+      costPrice: 800,
+      sellingPrice: 1200,
+      stockQuantity: 30,
+      reorderLevel: 5,
+      hasExpiry: true,
+      expiryDate: '',
+    },
+    existingProducts
+  );
+  assert.equal(missingExpiryDate.valid, false);
+  assert.match(
+    missingExpiryDate.error || '',
+    /Please specify an expiration date or toggle off expiration tracking/
+  );
+
+  // 3. Expiry toggle enabled with valid expiration date is accepted
+  const validExpiring = validateProductInput(
+    {
+      name: 'Fresh Yogurt 500ml',
+      sku: 'SKU-DAIRY-01',
+      barcode: '61599000301',
+      categoryId: 'cat-01',
+      unit: 'Bottle',
+      costPrice: 800,
+      sellingPrice: 1200,
+      stockQuantity: 30,
+      reorderLevel: 5,
+      hasExpiry: true,
+      expiryDate: '2026-12-25',
+    },
+    existingProducts
+  );
+  assert.equal(validExpiring.valid, true);
 });
 

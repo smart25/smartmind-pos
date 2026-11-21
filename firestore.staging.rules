@@ -106,25 +106,24 @@ service cloud.firestore {
         getUserProfile().role == 'cashier';
     }
 
-    // Platform Administrator is explicitly excluded from operational shop data
+    // Support Mode and Shop Staff Access
     function canAccessShop(businessId, shopId) {
       return !isQuarantinedPreFirebaseId(businessId) &&
         !isQuarantinedPreFirebaseId(shopId) &&
-        hasUserDoc() &&
-        isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager', 'cashier']);
+        (isPlatformAdmin() || (hasUserDoc() && isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager', 'cashier'])));
     }
 
     function canManageShopCatalogue(businessId, shopId) {
       return !isQuarantinedPreFirebaseId(businessId) &&
         !isQuarantinedPreFirebaseId(shopId) &&
-        hasUserDoc() &&
-        isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager']);
+        (isPlatformAdmin() || (hasUserDoc() && isAssignedShopStaffProfile(getUserProfile(), businessId, shopId, ['shop_manager'])));
     }
 
     // Granular permission checks (Business Owner of the tenant has full operational authority; staff require explicit permission keys)
     function profileHasPermission(profile, allowedKeys) {
       return profile.status == 'active' && (
         profile.role == 'business_owner' ||
+        profile.role == 'platform_admin' ||
         (profile.permissions is list && profile.permissions.hasAny(allowedKeys))
       );
     }
@@ -175,6 +174,7 @@ service cloud.firestore {
         'id', 'businessId', 'username', 'email', 'fullName',
         'role', 'roleLabel', 'assignedShopIds', 'permissions',
         'status', 'schemaVersion', 'createdAt', 'updatedAt',
+        'customRoleId',
         'authUidLinked', 'emailVerified', 'authDisabled',
         'authAccountCreatedAt', 'passwordSetupStatus',
         'passwordSetupEmailSentAt', 'repairedFromUserId', 'repairedAt'
@@ -190,7 +190,8 @@ service cloud.firestore {
         'manage_customers_debt', 'apply_discounts', 'apply_discount',
         'manage_products', 'manage_catalogue', 'manage_inventory',
         'manage_categories', 'adjust_inventory', 'adjust_stock',
-        'process_refunds', 'process_returns', 'void_sale', 'view_shop_reports'
+        'process_refunds', 'process_returns', 'void_sale', 'view_shop_reports',
+        'manage_staff', 'manage_shops', 'manage_business_settings', 'view_business_reports'
       ];
       return data.keys().hasAll(requiredFields) &&
         data.keys().hasOnly(allowedFields) &&
@@ -291,6 +292,7 @@ service cloud.firestore {
         'locationCity', 'address', 'phone', 'managerName',
         'status', 'terminalId', 'taxRatePercent',
         'receiptHeaderNote', 'receiptFooterNote',
+        'vatEnabled', 'printVatOnReceipt', 'description',
         'schemaVersion', 'createdAt', 'updatedAt'
       ];
       return data.keys().hasAll(requiredFields) &&
@@ -313,6 +315,9 @@ service cloud.firestore {
         data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 100 &&
         (!('receiptHeaderNote' in data) || (data.receiptHeaderNote is string && data.receiptHeaderNote.size() <= 300)) &&
         (!('receiptFooterNote' in data) || (data.receiptFooterNote is string && data.receiptFooterNote.size() <= 300)) &&
+        (!('vatEnabled' in data) || data.vatEnabled is bool) &&
+        (!('printVatOnReceipt' in data) || data.printVatOnReceipt is bool) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 400)) &&
         data.schemaVersion is int && data.schemaVersion >= 1 &&
         data.createdAt is string && data.createdAt.size() <= 50 &&
         data.updatedAt is string && data.updatedAt.size() <= 50;
@@ -325,8 +330,16 @@ service cloud.firestore {
         'sellingPriceKobo', 'stockQuantity', 'reorderLevel',
         'isActive', 'schemaVersion', 'createdAt', 'updatedAt'
       ];
+      let allowedFields = [
+        'id', 'shopId', 'businessId', 'categoryId', 'categoryName',
+        'sku', 'barcode', 'name', 'unit',
+        'costPrice', 'sellingPrice',
+        'costPriceKobo', 'sellingPriceKobo', 'stockQuantity', 'reorderLevel',
+        'hasExpiry', 'expiryDate',
+        'isActive', 'schemaVersion', 'createdAt', 'updatedAt'
+      ];
       return data.keys().hasAll(requiredFields) &&
-        data.keys().hasOnly(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
         data.id == productId &&
         data.shopId == shopId &&
         data.businessId == businessId &&
@@ -339,11 +352,15 @@ service cloud.firestore {
         data.barcode is string && data.barcode.size() >= 1 && data.barcode.size() <= 64 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
         data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 40 &&
+        (!('costPrice' in data) || (data.costPrice is number && data.costPrice >= 0)) &&
+        (!('sellingPrice' in data) || (data.sellingPrice is number && data.sellingPrice >= 0)) &&
         data.costPriceKobo is int && data.costPriceKobo >= 0 &&
         data.sellingPriceKobo is int && data.sellingPriceKobo >= 0 &&
         data.stockQuantity is int && data.stockQuantity >= 0 &&
         data.reorderLevel is int && data.reorderLevel >= 0 &&
         data.isActive is bool &&
+        (!('hasExpiry' in data) || data.hasExpiry is bool) &&
+        (!('expiryDate' in data) || data.expiryDate == null || (data.expiryDate is string && data.expiryDate.size() <= 40)) &&
         data.schemaVersion is int && data.schemaVersion >= 1 &&
         data.createdAt is string && data.createdAt.size() <= 50 &&
         data.updatedAt is string && data.updatedAt.size() <= 50;
@@ -663,13 +680,13 @@ service cloud.firestore {
         isAuthenticated() && (
           request.auth.uid == userId ||
           isPlatformAdmin() ||
-          (hasActiveProfile() && getUserProfile().role == 'business_owner' && resource.data.businessId == getUserProfile().businessId)
+          (hasActiveProfile() && (getUserProfile().role == 'business_owner' || (('permissions' in getUserProfile()) && 'manage_staff' in getUserProfile().permissions)) && resource.data.businessId == getUserProfile().businessId)
         )
       );
 
       allow list: if isAuthenticated() && (
         isPlatformAdmin() ||
-        (hasActiveProfile() && getUserProfile().role == 'business_owner' && resource.data.businessId == getUserProfile().businessId)
+        (hasActiveProfile() && (getUserProfile().role == 'business_owner' || (('permissions' in getUserProfile()) && 'manage_staff' in getUserProfile().permissions)) && resource.data.businessId == getUserProfile().businessId)
       );
 
       // Users cannot self-escalate roles; Bootstrap Admin can initialize own active platform_admin profile once; active Platform Admin can provision tenant users (never assigning self as business_owner)
@@ -684,7 +701,8 @@ service cloud.firestore {
          userId != request.auth.uid &&
          !isAuthorizedStagingAdminEmail(request.resource.data.email) &&
          request.resource.data.role in ['business_owner', 'shop_manager', 'cashier']) ||
-        (isBusinessOwnerOf(request.resource.data.businessId) &&
+        ((isBusinessOwnerOf(request.resource.data.businessId) ||
+          (hasActiveProfile() && getUserProfile().businessId == request.resource.data.businessId && ('permissions' in getUserProfile()) && 'manage_staff' in getUserProfile().permissions)) &&
          userId != request.auth.uid &&
          !isAuthorizedStagingAdminEmail(request.resource.data.email) &&
          request.resource.data.role in ['shop_manager', 'cashier'])
@@ -702,7 +720,8 @@ service cloud.firestore {
            isAuthorizedStagingAdminEmail(request.resource.data.email) &&
            request.resource.data.role == 'platform_admin' &&
            request.resource.data.status == 'active') ||
-          (isBusinessOwnerOf(resource.data.businessId) &&
+          ((isBusinessOwnerOf(resource.data.businessId) ||
+            (hasActiveProfile() && getUserProfile().businessId == resource.data.businessId && ('permissions' in getUserProfile()) && 'manage_staff' in getUserProfile().permissions)) &&
            resource.data.role in ['shop_manager', 'cashier'] &&
            !isAuthorizedStagingAdminEmail(request.resource.data.email) &&
            request.resource.data.role in ['shop_manager', 'cashier']) ||
@@ -773,14 +792,16 @@ service cloud.firestore {
         match /products/{productId} {
           allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
 
-          allow create: if (isPlatformAdmin() || (canManageShopCatalogue(businessId, shopId) && hasCataloguePermission())) &&
+          // Platform Admin operational writes must use the server callable and a valid support session.
+          allow create: if canManageShopCatalogue(businessId, shopId) &&
+            hasCataloguePermission() &&
             isValidProduct(request.resource.data, businessId, shopId, productId);
 
-          allow update: if (isPlatformAdmin() || (canManageShopCatalogue(businessId, shopId) && hasCataloguePermission())) &&
-            isValidProduct(request.resource.data, businessId, shopId, productId) &&
-            request.resource.data.createdAt == resource.data.createdAt;
+          allow update: if canManageShopCatalogue(businessId, shopId) &&
+            hasCataloguePermission() &&
+            isValidProduct(request.resource.data, businessId, shopId, productId);
 
-          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+          allow delete: if isBusinessOwnerOf(businessId);
         }
 
         // 6. Shop Inventory Movements (/businesses/{businessId}/shops/{shopId}/inventory_movements/{movementId})
@@ -789,7 +810,6 @@ service cloud.firestore {
 
           allow create: if request.resource.data.performedByUserId == request.auth.uid &&
             isValidInventoryMovement(request.resource.data, businessId, shopId, movementId) && (
-              isPlatformAdmin() ||
               (request.resource.data.type == 'sale_deduction' &&
                canAccessShop(businessId, shopId) &&
                hasSalesPermission() &&
@@ -808,7 +828,7 @@ service cloud.firestore {
         }
 
         // 7. Shop Sales (/businesses/{businessId}/shops/{shopId}/sales/{saleId})
-        // Platform Admin has global read and can void/refund completed transactions
+        // Platform Admin has read-only operational visibility; writes use tenant permissions or server callables.
         match /sales/{saleId} {
           allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
 
@@ -819,7 +839,7 @@ service cloud.firestore {
             (request.resource.data.cashierUserId == request.auth.uid || getUserProfile().role == 'business_owner') &&
             isValidSale(request.resource.data, businessId, shopId, saleId);
 
-          allow update: if (canAccessShop(businessId, shopId) || isPlatformAdmin()) &&
+          allow update: if canAccessShop(businessId, shopId) &&
             isValidSale(request.resource.data, businessId, shopId, saleId) &&
             resource.data.status == 'completed' &&
             (!('syncAckId' in resource.data) || request.resource.data.syncAckId == resource.data.syncAckId) &&
@@ -828,7 +848,7 @@ service cloud.firestore {
                hasSalesPermission()) ||
               (resource.data.status == 'completed' &&
                request.resource.data.status in ['refunded', 'voided'] &&
-               (isPlatformAdmin() || (getUserProfile().role in ['business_owner', 'shop_manager'] && hasRefundOrVoidPermission())))
+               (getUserProfile().role in ['business_owner', 'shop_manager'] && hasRefundOrVoidPermission()))
             );
 
           allow delete: if false;
@@ -908,6 +928,20 @@ service cloud.firestore {
 
           allow update, delete: if false;
         }
+
+        // 12. Shop Suppliers (/businesses/{businessId}/shops/{shopId}/suppliers/{supplierId})
+        match /suppliers/{supplierId} {
+          allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+        }
+
+        // 13. Shop Supplier Supplies (/businesses/{businessId}/shops/{shopId}/supplier_supplies/{supplyId})
+        match /supplier_supplies/{supplyId} {
+          allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+        }
       }
 
 
@@ -952,6 +986,50 @@ service cloud.firestore {
       match /subscription_events/{eventId} {
         allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
         allow create, update, delete: if false;
+      }
+
+      // 15. Inter-Shop Product Transfers (/businesses/{businessId}/transfers/{transferId})
+      match /transfers/{transferId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId
+        );
+
+        allow create, update: if (
+          isPlatformAdmin() ||
+          isBusinessOwnerOf(businessId) ||
+          (hasActiveProfile() &&
+           getUserProfile().businessId == businessId &&
+           (hasCataloguePermission() || hasInventoryAdjustmentPermission()))
+        ) && request.resource.data.businessId == businessId;
+
+        allow delete: if false;
+      }
+
+      // 16. Business Suppliers (/businesses/{businessId}/suppliers/{supplierId})
+      match /suppliers/{supplierId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId
+        );
+        allow create, update: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId
+        );
+        allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+      }
+
+      // 17. Business Supplier Supplies (/businesses/{businessId}/supplier_supplies/{supplyId})
+      match /supplier_supplies/{supplyId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId
+        );
+        allow create, update: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId
+        );
+        allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
       }
     }
 

@@ -28,6 +28,7 @@ interface DataEnvironmentBannerProps {
   isRefreshingLive?: boolean;
   storageAudit?: StorageAuditReport | null;
   onRefreshLive?: () => void;
+  onRetryPendingSync?: (syncId?: string) => Promise<void>;
   onConfirmClearDemoData?: () => void;
   onSwitchToLiveLogin?: () => void;
   onPurgeQuarantinedRecords?: () => Promise<PurgeQuarantinedPreFirebaseSalesResult>;
@@ -42,6 +43,7 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
   isRefreshingLive = false,
   storageAudit,
   onRefreshLive,
+  onRetryPendingSync,
   onConfirmClearDemoData,
   onSwitchToLiveLogin,
   onPurgeQuarantinedRecords,
@@ -59,6 +61,8 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
   >({});
   const [isCheckingCloudForensics, setIsCheckingCloudForensics] =
     useState(false);
+  const [retryingSyncId, setRetryingSyncId] = useState<string | null>(null);
+  const [isRetryingAll, setIsRetryingAll] = useState(false);
 
   const allInspectableItems = [
     ...(storageAudit?.pendingSyncItems || []),
@@ -79,6 +83,28 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
       setCloudForensicResults(map);
     } finally {
       setIsCheckingCloudForensics(false);
+    }
+  };
+
+  const handleRetryOne = async (syncId: string) => {
+    if (!onRetryPendingSync || retryingSyncId) return;
+    setRetryingSyncId(syncId);
+    try {
+      await onRetryPendingSync(syncId);
+      await runReadOnlyCloudForensicCheck();
+    } finally {
+      setRetryingSyncId(null);
+    }
+  };
+
+  const handleRetryAll = async () => {
+    if (!onRetryPendingSync || isRetryingAll) return;
+    setIsRetryingAll(true);
+    try {
+      await onRetryPendingSync();
+      await runReadOnlyCloudForensicCheck();
+    } finally {
+      setIsRetryingAll(false);
     }
   };
 
@@ -180,17 +206,14 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
             {dataMode === 'live' && (
               <>
                 Authenticated as <strong>{currentUserEmail}</strong>
-                {businessName ? ` · ${businessName}` : ''} · DB:{' '}
-                <code className="font-mono text-[10px] opacity-80">
-                  {firebaseConfig.firestoreDatabaseId}
-                </code>
+                {businessName ? ` · ${businessName}` : ''}
               </>
             )}
             {dataMode === 'offline_live' && (
               <>
                 Operating on cached real records for{' '}
                 <strong>{currentUserEmail}</strong>
-                {businessName ? ` (${businessName})` : ''} · Demo data blocked
+                {businessName ? ` (${businessName})` : ''}
               </>
             )}
             {dataMode === 'demo' && (
@@ -250,7 +273,7 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
             </button>
           )}
 
-          {onConfirmClearDemoData && (
+          {dataMode === 'demo' && onConfirmClearDemoData && (
             <button
               type="button"
               onClick={() => setConfirmClearOpen(true)}
@@ -370,13 +393,26 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
             <div className="overflow-auto space-y-4 pr-1">
               {/* Section 1: Actionable Pending Sync Queue */}
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
                     1. Actionable Pending Production Sync Queue ({storageAudit.pendingSyncItems.length})
                   </h4>
-                  <span className="text-[11px] text-slate-500">
-                    Eligible for synchronization by authorized tenant members
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-500">
+                      Eligible for synchronization by authorized tenant members
+                    </span>
+                    {onRetryPendingSync && storageAudit.pendingSyncItems.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleRetryAll}
+                        disabled={isRetryingAll}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs cursor-pointer shadow-sm disabled:opacity-50 transition-colors"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRetryingAll ? 'animate-spin' : ''}`} />
+                        <span>{isRetryingAll ? 'Retrying...' : 'Retry All Pending Syncs'}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {storageAudit.pendingSyncItems.length === 0 ? (
                   <div className="p-3 rounded-lg bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-900 flex items-center gap-2">
@@ -422,6 +458,17 @@ export const DataEnvironmentBanner: React.FC<DataEnvironmentBannerProps> = ({
                                 <div className="text-slate-600">
                                   Retries: <strong>{item.retryCount}</strong>
                                 </div>
+                                {onRetryPendingSync && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRetryOne(item.id)}
+                                    disabled={retryingSyncId === item.id || isRetryingAll}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 mt-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[10px] cursor-pointer disabled:opacity-50 transition-colors"
+                                  >
+                                    <RefreshCw className={`w-2.5 h-2.5 ${retryingSyncId === item.id ? 'animate-spin' : ''}`} />
+                                    <span>{retryingSyncId === item.id ? 'Retrying...' : 'Retry Sync'}</span>
+                                  </button>
+                                )}
                               </td>
                               <td className="py-2.5 px-2.5 font-mono text-[10px] text-slate-700 break-all max-w-[160px]">
                                 {item.idempotencyKey}

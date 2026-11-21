@@ -117,14 +117,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     const cleanEmail = identifier.trim();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       setErrorMessage(
-        'Enter your account email address above to receive a Firebase password reset link.'
+        'Enter your account email address above to receive a password reset link.'
       );
       return;
     }
 
     if (authMode === 'demo') {
       setResetSuccessMessage(
-        `Demo Mode Notice: In isolated Demo Mode, use the quick-fill profile cards below or ask your Business Owner to reset your demo credential. Switch to "Firebase Cloud" for real email password reset.`
+        'Demo Mode Notice: In isolated Demo Mode, use the quick-fill profile cards below or ask your Business Owner to reset your demo credential. Switch to "Live Cloud Mode" for real email password reset.'
       );
       return;
     }
@@ -133,7 +133,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     try {
       await sendPasswordResetEmail(auth, cleanEmail);
       setResetSuccessMessage(
-        `Password reset email dispatched via Firebase Authentication to ${cleanEmail}. Check your inbox to complete the reset.`
+        `Password reset email sent to ${cleanEmail}. Check your inbox to complete the reset.`
       );
     } catch (err: any) {
       setErrorMessage(
@@ -219,20 +219,27 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         if (
           err?.code === 'auth/invalid-credential' ||
           err?.code === 'auth/user-not-found' ||
-          err?.code === 'auth/wrong-password'
+          err?.code === 'auth/wrong-password' ||
+          err?.code === 'auth/invalid-email'
         ) {
           setErrorMessage(
-            'Firebase Authentication failed: Invalid email or password. Note: Cloud Firestore is a database and does not handle user passwords. The login account must be created in Firebase Console > Authentication > Users (with Email/Password enabled). Alternatively, click "Sign In with Verified Google Account" below for instant access.'
+            'Invalid email or password. Please check your credentials and try again.'
           );
-        } else if (err?.code === 'auth/operation-not-allowed') {
+        } else if (err?.code === 'auth/too-many-requests') {
           setErrorMessage(
-            'Email/Password sign-in provider is disabled in your Firebase project. Please enable it in Firebase Console > Authentication > Sign-in method > Email/Password, or use "Sign In with Verified Google Account" below.'
+            'Access temporarily disabled due to multiple failed login attempts. Please reset your password or try again later.'
+          );
+        } else if (err?.code === 'auth/user-disabled') {
+          setErrorMessage(
+            'This account has been disabled. Please contact your business administrator.'
+          );
+        } else if (err?.code === 'auth/network-request-failed') {
+          setErrorMessage(
+            'Network connection error. Please check your internet connection and try again.'
           );
         } else {
           setErrorMessage(
-            `Firebase Authentication failed: ${
-              err?.message || 'Unable to authenticate with Firebase.'
-            }`
+            'Invalid email or password. Please check your credentials and try again.'
           );
         }
       } finally {
@@ -250,7 +257,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
     if (!matchedUser) {
       setErrorMessage(
-        'No matching demo account found. Select one of the demo profiles below or switch to Firebase Cloud Auth.'
+        'No matching demo account found. Select one of the demo profiles below or switch to Live Cloud Mode.'
       );
       return;
     }
@@ -277,22 +284,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col justify-between">
-      {/* Top Architecture Status Bar */}
+      {/* Top Status Bar */}
       <div className="bg-slate-900 text-slate-200 px-3.5 sm:px-6 py-2 sm:py-2.5 border-b border-slate-800 text-xs flex flex-wrap items-center justify-between gap-2 sm:gap-4">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>
-            <strong className="text-white">Phase 6 Cloud &amp; Multi-Shop Sync:</strong>{' '}
-            <span className="hidden sm:inline">
-              Firebase Authentication &amp; Cloud Firestore Security Rules active ({isFirebaseConfigured ? 'Connected' : 'Env Fallback'}). Isolated Demo Mode retained for role evaluation.
-            </span>
-            <span className="sm:hidden">Firebase Auth &amp; Demo Mode ready.</span>
+            <strong className="text-white">SmartMind POS Terminal:</strong>{' '}
+            <span>Secure Cloud Connection &amp; Multi-Shop Sync Active</span>
           </span>
         </div>
         <div className="flex items-center gap-3 sm:gap-4 text-slate-400 font-mono text-[11px] sm:text-xs">
-          <span>Adapter: IndexedDB + Cloud Sync</span>
-          <span aria-hidden="true">Â·</span>
-          <span>Phase 6</span>
+          <span>Enterprise Edition</span>
         </div>
       </div>
 
@@ -365,66 +367,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </div>
 
             <div className="hidden lg:flex mt-8 pt-4 border-t border-slate-800 items-center justify-between text-xs text-slate-400">
-              <span>SmartMind POS Architecture</span>
-              <span>Phase 6 Cloud Sync</span>
+              <span>SmartMind POS</span>
+              <span>Enterprise Edition</span>
             </div>
           </div>
 
-          {/* Right Column: Sign-In Form & Demo Profile Switcher */}
+          {/* Right Column: Sign-In Form */}
           <div className="lg:col-span-7 p-5 sm:p-8 lg:p-10 flex flex-col justify-between">
             <div>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-xl font-display font-bold text-slate-900">
-                    Sign in to Terminal
-                  </h2>
-                  <p className="text-sm text-slate-500 mt-1">
-                    Authenticate via Firebase Cloud Auth or evaluate in isolated Demo Mode.
-                  </p>
-                </div>
-
-                {/* Auth Mode Switcher */}
-                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode('firebase');
-                      if (identifier.endsWith('.demo')) {
-                        setIdentifier('');
-                        setPassword('');
-                      }
-                      setErrorMessage(null);
-                      setResetSuccessMessage(null);
-                    }}
-                    className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
-                      authMode === 'firebase'
-                        ? 'bg-emerald-600 text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    <Cloud className="w-3.5 h-3.5" />
-                    <span>Live Cloud Mode</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode('demo');
-                      if (!identifier) {
-                        setIdentifier('owner@smartmindpos.demo');
-                        setPassword(DEFAULT_DEMO_PASSWORD);
-                      }
-                      setErrorMessage(null);
-                      setResetSuccessMessage(null);
-                    }}
-                    className={`px-2.5 py-1 rounded-md font-semibold cursor-pointer transition-colors ${
-                      authMode === 'demo'
-                        ? 'bg-indigo-600 text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Isolated Demo Mode
-                  </button>
-                </div>
+              <div>
+                <h2 className="text-xl font-display font-bold text-slate-900">
+                  Sign in to Terminal
+                </h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  Sign in to your account to continue.
+                </p>
               </div>
 
               {errorMessage && (
@@ -482,7 +439,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       htmlFor="login-password"
                       className="block text-xs font-semibold text-slate-700"
                     >
-                      Password {authMode === 'demo' ? '(Demo)' : '(Firebase Auth)'}
+                      Password
                     </label>
                     <button
                       type="button"
@@ -552,138 +509,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   </button>
                 </div>
 
-                <div className="space-y-2.5">
+                <div className="pt-2">
                   <button
                     type="submit"
                     disabled={isLoading}
                     className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold text-sm rounded-lg transition-colors flex items-center justify-center gap-2 shadow-xs cursor-pointer"
                   >
-                    <span>
-                      {isLoading
-                        ? 'Authenticating...'
-                        : authMode === 'firebase'
-                        ? 'Sign In with Firebase Authentication'
-                        : 'Sign In to SmartMind POS (Isolated Demo)'}
-                    </span>
+                    <span>{isLoading ? 'Authenticating...' : 'Sign In'}</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
-
-                  {authMode === 'firebase' && (
-                    <button
-                      type="button"
-                      disabled={isLoading}
-                      onClick={handleGoogleSignIn}
-                      className="w-full py-2.5 px-4 bg-white hover:bg-slate-50 text-slate-800 font-semibold text-xs border border-slate-300 rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Cloud className="w-4 h-4 text-emerald-600" />
-                      <span>Sign In with Verified Google Account</span>
-                    </button>
-                  )}
                 </div>
               </form>
             </div>
-
-            {/* Mode-Specific Bottom Panel */}
-            {authMode === 'firebase' ? (
-              <div className="mt-8 pt-6 border-t border-slate-200">
-                <div className="rounded-xl bg-emerald-50/70 border border-emerald-200 p-4 text-xs text-emerald-950 space-y-1.5">
-                  <div className="flex items-center gap-2 font-bold text-emerald-900">
-                    <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" />
-                    <span>Live Cloud Mode Active (Default)</span>
-                  </div>
-                  <p className="text-emerald-800 leading-relaxed">
-                    Authenticating via Google or Firebase Email/Password loads
-                    only your verified business and shop records from Cloud
-                    Firestore. Sample/demo data is strictly excluded.
-                  </p>
-                  <div className="pt-2 border-t border-emerald-200/80 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-emerald-800 font-medium">Platform Admin:</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('firebase');
-                        setIdentifier('smartnwokolo@gmail.com');
-                        setErrorMessage(null);
-                        setResetSuccessMessage(null);
-                      }}
-                      className="px-2.5 py-1 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1.5"
-                    >
-                      <UserIcon className="w-3 h-3 text-emerald-200" />
-                      <span>Use smartnwokolo@gmail.com</span>
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-emerald-700">
-                    Need to evaluate sample data instead? Click{' '}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('demo');
-                        setIdentifier('owner@smartmindpos.demo');
-                        setPassword(DEFAULT_DEMO_PASSWORD);
-                      }}
-                      className="underline font-semibold cursor-pointer"
-                    >
-                      Isolated Demo Mode
-                    </button>{' '}
-                    above.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="mt-8 pt-6 border-t border-slate-200">
-                <p className="text-xs font-semibold text-slate-700 mb-2.5">
-                  Quick-Fill Isolated Demonstration Accounts (Click to populate credentials):
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {demoUsers.map((u) => {
-                    const isSelected =
-                      authMode === 'demo' &&
-                      selectedPresetId === u.id &&
-                      identifier.toLowerCase() === u.email.toLowerCase();
-                    return (
-                      <button
-                        key={u.id}
-                        type="button"
-                        onClick={() => handleSelectPreset(u)}
-                        className={`p-2.5 rounded-lg border text-left transition-colors ${
-                          isSelected
-                            ? 'bg-emerald-50/70 border-emerald-600 text-slate-900'
-                            : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-slate-900 truncate">
-                            {u.fullName}
-                          </span>
-                          <span className="text-xs font-mono text-emerald-700 shrink-0">
-                            {u.role === 'platform_admin'
-                              ? 'Platform Admin'
-                              : u.role === 'business_owner'
-                              ? 'Primary Owner'
-                              : `${u.assignedShopIds.length} shop${
-                                  u.assignedShopIds.length === 1 ? '' : 's'
-                                }`}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-500 truncate mt-0.5">
-                          {u.roleLabel} Â· {u.email}
-                        </p>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </main>
 
       {/* Footer */}
       <footer className="px-6 py-3 bg-white border-t border-slate-200 text-xs text-slate-500 flex flex-wrap items-center justify-between gap-4">
-        <span>SmartMind POS â€” Multi-Shop Point of Sale System</span>
-        <span>
-          Plaintext passwords are never stored in localStorage, IndexedDB, Firestore, or sync_queue.
-        </span>
+        <span>SmartMind POS — Multi-Shop Point of Sale System</span>
+        <span>Enterprise Cloud Edition</span>
       </footer>
     </div>
   );

@@ -226,7 +226,11 @@ export class CloudSyncService {
   // ===========================================================================
   async syncPendingOperations(
     actor: User,
-    options?: { shopId?: string }
+    options?: {
+      shopId?: string;
+      includeRequiresReview?: boolean;
+      targetSyncId?: string;
+    }
   ): Promise<SyncBatchRunSummary> {
     if (!actor || actor.status !== 'active') {
       throw new Error('UNAUTHORIZED: Active authenticated user is required to run synchronization.');
@@ -236,13 +240,19 @@ export class CloudSyncService {
       ? await this.adapter.getAllSyncQueue(options?.shopId)
       : await this.adapter.getPendingSyncQueue(options?.shopId);
 
-    // Select candidate entries in 'pending' or 'failed' (retryable) states;
+    // Select candidate entries in 'pending' or 'failed' (retryable) states, or 'requires_review' when explicitly requested.
     // 'quarantined' entries are permanently excluded from production sync attempts.
-    const candidates = allQueue.filter(
-      (e) =>
-        (e.status === 'pending' || e.status === 'failed') &&
-        e.status !== ('quarantined' as any)
-    );
+    const candidates = allQueue.filter((e) => {
+      if (e.status === ('quarantined' as any)) return false;
+      if (options?.targetSyncId) {
+        return e.id === options.targetSyncId;
+      }
+      return (
+        e.status === 'pending' ||
+        e.status === 'failed' ||
+        (options?.includeRequiresReview && e.status === 'requires_review')
+      );
+    });
 
     let processedCount = 0;
     let syncedCount = 0;
@@ -273,6 +283,13 @@ export class CloudSyncService {
           }
         );
         quarantinedCount += 1;
+        continue;
+      }
+
+      // Receipt returns use a dedicated server-authoritative processor.
+      // Never send them through the generic syncPosOperation endpoint.
+      // Leave them queued until the dedicated return-sync processor is available.
+      if (entry.entity_type === 'sale_return') {
         continue;
       }
 
@@ -423,6 +440,7 @@ export class CloudSyncService {
                 {
                   ...existingSale,
                   is_synced: 1,
+                  sync_conflict_reason: undefined,
                   synced_at: ackTime,
                   sync_ack_id: response.ackId,
                 },

@@ -121,6 +121,8 @@ export interface DbProduct {
   selling_price_kobo: number; // integer minor units
   stock_quantity: number;
   reorder_level: number;
+  has_expiry?: number; // 1 or 0
+  expiry_date?: string | null;
   tax_exempt: number; // 1 or 0
   is_active: number; // 1 or 0
   created_at: string;
@@ -253,7 +255,8 @@ export interface DbSyncQueueEntry {
     | 'inventory_movement'
     | 'customer'
     | 'invoice'
-    | 'payment';
+    | 'payment'
+    | 'sale_return';
   entity_id: string;
   operation_type: 'create' | 'update' | 'delete' | 'adjust';
   payload_json: string; // sanitized data snapshot (NO passwords or tokens)

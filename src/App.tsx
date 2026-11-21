@@ -1,9 +1,10 @@
-/**
+﻿/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { LogOut } from 'lucide-react';
 import {
   AccountStatus,
   AppView,
@@ -22,6 +23,7 @@ import {
   PermissionKey,
   Product,
   ProductCategory,
+  ProductTransfer,
   SaleTransaction,
   Shop,
   ShopAssignment,
@@ -33,6 +35,7 @@ import {
   UnitOfMeasurement,
   User,
   CustomRole,
+  ShopPrinterSettings,
 } from './types/pos';
 import {
   CONNECTIVITY_PRESETS,
@@ -93,6 +96,7 @@ import {
   ProductFormInput,
   ROLE_DEFAULT_PERMISSIONS,
   SupplyDraftItem,
+  canUserAccessShop,
 } from './utils/posCalculations';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
@@ -107,6 +111,8 @@ import { PlatformAdminPage } from './pages/PlatformAdminPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { PosPage } from './pages/PosPage';
 import { ProductsInventoryPage } from './pages/ProductsInventoryPage';
+import { ProductTransferPage } from './pages/ProductTransferPage';
+import { ExpiringProductsPage } from './pages/ExpiringProductsPage';
 import { SalesHistoryPage } from './pages/SalesHistoryPage';
 import { SalesSummaryPage } from './pages/SalesSummaryPage';
 import { DebtBookPage } from './pages/DebtBookPage';
@@ -130,22 +136,39 @@ import {
   isPreFirebaseTestRecord,
   LiveFirestoreDataService,
   LiveSessionResolutionResult,
+  loadBusinessScopedLiveCache,
   loadUserScopedLiveCache,
   purgeQuarantinedPreFirebaseRecords,
   quarantinePreFirebaseTestSales,
   reconcileInvitedStaffState,
   RepairLiveBusinessOwnerAuthResult,
+  saveBusinessScopedLiveCache,
   saveUserScopedLiveCache,
   SendOwnerPasswordSetupEmailResult,
+  SPECIFIED_PRE_FIREBASE_SALE_ID_SET,
+  SPECIFIED_PRE_FIREBASE_SYNC_ID_SET,
   StorageAuditReport,
 } from './services/liveFirestoreDataService';
+import { fromMinorUnits } from './db/schema';
 import type { PurgeQuarantinedPreFirebaseSalesResult } from './db/databaseAdapter';
 import {
   auth,
   firebaseConfig,
   firebaseSignOut,
   onAuthStateChanged,
+  testFirestoreConnection,
+  callStartPlatformAdminSupportSession,
+  callEndPlatformAdminSupportSession,
+  callGetPlatformAdminSupportSession,
 } from './firebase';
+
+import type {
+  PlatformAdminSupportSessionResponse,
+} from './firebase';
+import {
+  provisionStaffAccount,
+  resetStaffAccountPassword,
+} from './services/staffAuthService';
 
 type SessionStage =
   | 'login'
@@ -160,6 +183,7 @@ interface PersistedLiveSessionMeta {
   uid: string;
   email: string;
   displayName?: string | null;
+  businessId?: string;
   sessionStage: SessionStage;
   activeShopId: string | null;
   activeView: AppView;
@@ -328,13 +352,47 @@ export default function App() {
     () => (dataMode !== 'demo' ? loadPersistedLiveSessionMeta() : null),
     []
   );
-  const persistedLiveCache = useMemo(
-    () =>
-      dataMode !== 'demo' && persistedLiveMeta?.uid
-        ? loadUserScopedLiveCache(persistedLiveMeta.uid)
-        : null,
-    []
-  );
+  const persistedLiveCache = useMemo(() => {
+    if (dataMode === 'demo' || !persistedLiveMeta?.uid) return null;
+    const userCache = loadUserScopedLiveCache(persistedLiveMeta.uid);
+    const bizCache = persistedLiveMeta.businessId
+      ? loadBusinessScopedLiveCache(persistedLiveMeta.businessId)
+      : null;
+    if (userCache && bizCache) {
+      return {
+        ...userCache,
+        users:
+          bizCache.users && bizCache.users.length > userCache.users.length
+            ? bizCache.users
+            : userCache.users,
+        debtCustomers:
+          bizCache.debtCustomers.length > 0
+            ? bizCache.debtCustomers
+            : userCache.debtCustomers,
+        debtTransactions:
+          bizCache.debtTransactions.length > 0
+            ? bizCache.debtTransactions
+            : userCache.debtTransactions,
+        suppliers:
+          bizCache.suppliers.length > 0
+            ? bizCache.suppliers
+            : userCache.suppliers,
+        supplierSupplies:
+          bizCache.supplierSupplies.length > 0
+            ? bizCache.supplierSupplies
+            : userCache.supplierSupplies,
+        invoices:
+          bizCache.invoices.length > 0
+            ? bizCache.invoices
+            : userCache.invoices,
+        stockAdjustments:
+          bizCache.stockAdjustments.length > 0
+            ? bizCache.stockAdjustments
+            : userCache.stockAdjustments,
+      };
+    }
+    return userCache || bizCache;
+  }, [dataMode, persistedLiveMeta]);
 
   // Phase 5 & Phase 6 Persistent Database Adapter, Atomic Sale Finalization & Cloud Sync Services
   const dbAdapter = useMemo(() => getDatabaseAdapter(), []);
@@ -375,6 +433,15 @@ export default function App() {
     null
   );
   const restoredUidRef = useRef<string | null>(null);
+  const authResolutionRequestRef = useRef(0);
+  const isSyncingPendingRef = useRef(false);
+  const isRefreshingLiveRef = useRef(false);
+  const handleRefreshLiveWorkspaceRef = useRef<(() => Promise<void>) | null>(null);
+  const handleRetryPendingSyncRef = useRef<((syncId?: string) => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    isRefreshingLiveRef.current = isRefreshingLive;
+  }, [isRefreshingLive]);
 
   useEffect(() => {
     dbAdapter
@@ -481,6 +548,7 @@ export default function App() {
       ? persistedDemo?.customRoles ?? DEMO_CUSTOM_ROLES
       : persistedLiveCache?.customRoles ?? []
   );
+  const [transfers, setTransfers] = useState<ProductTransfer[]>([]);
 
   const defaultDemoOwner =
     DEMO_USERS.find((u) => u.id === 'usr-owner-01') ?? DEMO_USERS[1];
@@ -529,24 +597,360 @@ export default function App() {
       : persistedLiveMeta?.activeView ?? 'dashboard'
   );
 
-  // Compute safe view strictly enforced by the current user's granted permissions
-  const safeActiveView = useMemo<AppView>(() => {
-    if (canUserAccessView(currentUser, activeView)) {
-      return activeView;
-    }
-    return getDefaultViewForUser(currentUser);
-  }, [currentUser, activeView]);
+// Platform Admin Support Mode — server-issued, time-limited session
+const [activeSupportSession, setActiveSupportSession] =
+  useState<PlatformAdminSupportSessionResponse | null>(null);
 
-  useEffect(() => {
-    if (activeView !== safeActiveView) {
-      setActiveView(safeActiveView);
-    }
-  }, [safeActiveView, activeView]);
+const isPlatformSupportMode = useMemo(() => {
+  const session = activeSupportSession;
+  const authenticatedUid = auth.currentUser?.uid;
+  const expiresAtMs = session?.expiresAt
+    ? Date.parse(session.expiresAt)
+    : NaN;
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
-    () => persistedDemo?.sidebarCollapsed ?? false
+  return Boolean(
+    currentUser.role === 'platform_admin' &&
+    authenticatedUid &&
+    session &&
+    session.status === 'active' &&
+    session.adminUid === authenticatedUid &&
+    session.supportSessionId &&
+    session.businessId &&
+    session.shopId &&
+    Number.isFinite(expiresAtMs) &&
+    expiresAtMs > Date.now()
   );
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+}, [activeSupportSession, currentUser.role, auth.currentUser?.uid]);
+
+// Enforce the server-issued expiry in the UI as well as on the backend.
+useEffect(() => {
+  if (!activeSupportSession) return;
+
+  const expiresAtMs = activeSupportSession.expiresAt
+    ? Date.parse(activeSupportSession.expiresAt)
+    : NaN;
+
+  if (!Number.isFinite(expiresAtMs)) {
+    setActiveSupportSession(null);
+    setActiveShopId(null);
+    setActiveView('platform_admin');
+    setSessionStage('platform_admin');
+    return;
+  }
+
+  const remainingMs = expiresAtMs - Date.now();
+
+  if (remainingMs <= 0) {
+    setActiveSupportSession(null);
+    setActiveShopId(null);
+    setActiveView('platform_admin');
+    setSessionStage('platform_admin');
+    return;
+  }
+
+  const timeoutId = window.setTimeout(() => {
+    setActiveSupportSession(null);
+    setActiveShopId(null);
+    setActiveView('platform_admin');
+    setSessionStage('platform_admin');
+  }, remainingMs);
+
+  return () => window.clearTimeout(timeoutId);
+}, [activeSupportSession]);
+
+// Until operational write paths are fully implemented, expose only
+// the initial support views. Do not grant ordinary Platform Admin permissions.
+const safeActiveView = useMemo<AppView>(() => {
+  if (currentUser.role === 'platform_admin') {
+    if (!isPlatformSupportMode) return 'platform_admin';
+
+    // Support Mode exposes full shop operational surfaces for administrator
+    // inspection and troubleshooting.
+    const supportAllowedViews: AppView[] = [
+      'dashboard',
+      'pos',
+      'inventory',
+      'product_transfer',
+      'expiring_products',
+      'invoices',
+      'sales',
+      'sales_summary',
+      'debt_book',
+      'reports',
+      'suppliers',
+      'shops',
+      'staff',
+      'settings',
+    ];
+
+    return supportAllowedViews.includes(activeView)
+      ? activeView
+      : 'dashboard';
+  }
+
+  if (canUserAccessView(currentUser, activeView)) {
+    return activeView;
+  }
+
+  return getDefaultViewForUser(currentUser);
+}, [currentUser, activeView, isPlatformSupportMode]);
+
+useEffect(() => {
+  if (activeView !== safeActiveView) {
+    setActiveView(safeActiveView);
+  }
+}, [safeActiveView, activeView]);
+const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
+  () => persistedDemo?.sidebarCollapsed ?? false
+);
+const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+const handleStartSupportSession = async (
+  businessId: string,
+  shopId: string
+): Promise<PlatformAdminSupportSessionResponse> => {
+  if (dataMode === 'demo') {
+    throw new Error('Platform Admin Support Mode requires live Firebase authentication.');
+  }
+
+  if (currentUser.role !== 'platform_admin') {
+    throw new Error('Only an authenticated Platform Admin can start a support session.');
+  }
+
+  if (!auth.currentUser) {
+    throw new Error('Your Firebase authentication session is unavailable. Please sign in again.');
+  }
+
+  if (!businessId || !shopId) {
+    throw new Error('A valid business and shop must be selected.');
+  }
+
+  if (activeSupportSession) {
+    throw new Error('End the existing support session before starting another.');
+  }
+
+  const result = await callStartPlatformAdminSupportSession({
+    businessId,
+    shopId,
+  });
+
+  const session = result.data;
+
+  const expiresAtMs = session.expiresAt
+  ? Date.parse(session.expiresAt)
+  : NaN;
+
+if (
+  session.status !== 'active' ||
+  !session.supportSessionId ||
+  session.adminUid !== auth.currentUser.uid ||
+  session.businessId !== businessId ||
+  session.shopId !== shopId ||
+  !Number.isFinite(expiresAtMs) ||
+  expiresAtMs <= Date.now()
+) {
+  throw new Error('The server returned an invalid or expired support-session response.');
+}
+
+setActiveSupportSession(session);
+setActiveShopId(shopId);
+setActiveView('dashboard');
+setSessionStage('workspace');
+
+return session;
+};
+
+const handleEndSupportSession = async (): Promise<void> => {
+  if (!activeSupportSession) {
+    throw new Error('There is no active support session to end.');
+  }
+
+  if (!auth.currentUser) {
+    throw new Error('Your Firebase authentication session is unavailable.');
+  }
+
+  if (activeSupportSession.adminUid !== auth.currentUser.uid) {
+    throw new Error('This support session does not belong to the current administrator.');
+  }
+
+  await callEndPlatformAdminSupportSession({
+    supportSessionId: activeSupportSession.supportSessionId,
+  });
+
+  // Clear local support context only after the server confirms the request.
+  setActiveSupportSession(null);
+  setActiveShopId(null);
+  setActiveView('platform_admin');
+  setSessionStage('platform_admin');
+  setSuppliers([]);
+  setSupplierSupplies([]);
+  setDebtCustomers([]);
+  setDebtTransactions([]);
+  setInvoices([]);
+};
+
+// In Platform Admin Support Mode: automatically load the inspected shop's live products, sales, and catalog
+useEffect(() => {
+  if (
+    currentUser.role === 'platform_admin' &&
+    isPlatformSupportMode &&
+    activeSupportSession
+  ) {
+    const bizId = activeSupportSession.businessId;
+    const shId = activeSupportSession.shopId;
+    void (async () => {
+      try {
+        const supportData = await liveDataService.loadSupportWorkspaceData(bizId, shId);
+        const {
+          products: cloudProducts,
+          sales: cloudSales,
+          users: bizUsers,
+          transfers: cloudTransfers,
+          categories: cloudCategories,
+          suppliers: cloudSuppliers,
+          supplierSupplies: cloudSupplierSupplies,
+          debtCustomers: cloudCustomers,
+          invoices: cloudInvoices,
+        } = supportData;
+
+        if (cloudTransfers) {
+          setTransfers(cloudTransfers);
+        }
+
+        const validProducts = cloudProducts.filter(
+          (p) => p.businessId === bizId && p.shopId === shId && !isKnownDemoRecord(p)
+        );
+        const validSales = cloudSales.filter(
+          (s) => s.businessId === bizId && s.shopId === shId && !isKnownDemoRecord(s)
+        );
+
+        setProducts((prev) => [
+          ...prev.filter((p) => p.businessId !== bizId || p.shopId !== shId),
+          ...validProducts,
+        ]);
+
+        setSales((prev) => [
+          ...prev.filter((s) => s.businessId !== bizId || s.shopId !== shId),
+          ...validSales,
+        ]);
+
+        if (bizUsers.length > 0) {
+          setUsers((prev) => {
+            const existingIds = new Set(prev.map((u) => u.id));
+            const freshUsers = bizUsers.filter((u) => !existingIds.has(u.id) && !isKnownDemoRecord(u));
+            return [...prev, ...freshUsers];
+          });
+        }
+
+        if (cloudCategories && cloudCategories.length > 0) {
+          setCategories((prev) => {
+            const otherCats = prev.filter((c) => c.businessId !== bizId || c.shopId !== shId);
+            return [...otherCats, ...cloudCategories];
+          });
+        }
+
+        setUnits((prev) => {
+          const hasUnit = prev.some((u) => u.shopId === shId && u.businessId === bizId);
+          if (hasUnit) return prev;
+          return [
+            ...prev,
+            { id: `unit-${shId}-unit`, shopId: shId, businessId: bizId, name: 'Unit', abbreviation: 'unit' },
+            { id: `unit-${shId}-pack`, shopId: shId, businessId: bizId, name: 'Pack', abbreviation: 'pk' },
+          ];
+        });
+
+        // Load business-scoped live records (suppliers, supplier supplies, debt customers, debt transactions, invoices, stock adjustments)
+        const bizCache = loadBusinessScopedLiveCache(bizId);
+        const mergeEntities = <T extends { id: string; businessId?: string }>(
+          prev: T[],
+          incoming: T[] = []
+        ): T[] => {
+          const map = new Map<string, T>();
+          prev.forEach((item) => map.set(item.id, item));
+          incoming.forEach((item) => {
+            if (item.businessId === bizId && !isKnownDemoRecord(item as any)) {
+              map.set(item.id, item);
+            }
+          });
+          return Array.from(map.values());
+        };
+
+        const mergedSuppliers = mergeEntities(cloudSuppliers || [], bizCache?.suppliers || []);
+        if (mergedSuppliers.length > 0) {
+          setSuppliers((prev) => mergeEntities(prev, mergedSuppliers));
+        }
+
+        const mergedSupplies = mergeEntities(cloudSupplierSupplies || [], bizCache?.supplierSupplies || []);
+        if (mergedSupplies.length > 0) {
+          setSupplierSupplies((prev) => mergeEntities(prev, mergedSupplies));
+        }
+
+        const mergedCustomers = mergeEntities(cloudCustomers || [], bizCache?.debtCustomers || []);
+        if (mergedCustomers.length > 0) {
+          setDebtCustomers((prev) => mergeEntities(prev, mergedCustomers));
+        }
+
+        if (bizCache?.debtTransactions && bizCache.debtTransactions.length > 0) {
+          setDebtTransactions((prev) => mergeEntities(prev, bizCache.debtTransactions));
+        }
+
+        const mergedInvoices = mergeEntities(cloudInvoices || [], bizCache?.invoices || []);
+        if (mergedInvoices.length > 0) {
+          setInvoices((prev) => mergeEntities(prev, mergedInvoices));
+        }
+
+        if (bizCache?.stockAdjustments && bizCache.stockAdjustments.length > 0) {
+          setStockAdjustments((prev) => mergeEntities(prev, bizCache.stockAdjustments));
+        }
+      } catch (err) {
+        console.warn('Failed to load shop data during Platform Admin Support Mode:', err);
+      }
+    })();
+  }
+}, [
+  currentUser.role,
+  isPlatformSupportMode,
+  activeSupportSession?.supportSessionId,
+  activeSupportSession?.businessId,
+  activeSupportSession?.shopId,
+  liveDataService,
+]);
+
+// In Platform Admin Console (non-support mode): automatically load all global products and sales across all businesses & shops
+useEffect(() => {
+  if (
+    currentUser.role === 'platform_admin' &&
+    !isPlatformSupportMode &&
+    dataMode !== 'demo' &&
+    liveDataService
+  ) {
+    let isCancelled = false;
+    void (async () => {
+      try {
+        const [globalProducts, globalSales] = await Promise.all([
+          liveDataService.listAllProductsGlobal(),
+          liveDataService.listAllSalesGlobal(),
+        ]);
+        if (!isCancelled) {
+          setProducts(globalProducts.filter((p) => !isKnownDemoRecord(p)));
+          setSales(globalSales.filter((s) => !isKnownDemoRecord(s)));
+        }
+      } catch (err) {
+        console.warn('Failed to load global platform products and sales:', err);
+      }
+    })();
+    return () => {
+      isCancelled = true;
+    };
+  }
+}, [
+  currentUser.role,
+  isPlatformSupportMode,
+  dataMode,
+  liveDataService,
+  businesses.length,
+  shops.length,
+]);
 
   // Cross-screen inspection pointer
   const [inspectedSale, setInspectedSale] = useState<SaleTransaction | null>(
@@ -620,6 +1024,7 @@ export default function App() {
         uid: liveUid,
         email: liveEmail,
         displayName: liveResolution?.displayName || currentUser.fullName,
+        businessId: currentUser.businessId,
         sessionStage,
         activeShopId,
         activeView,
@@ -634,7 +1039,14 @@ export default function App() {
       sessionStage !== 'login' &&
       sessionStage !== 'live_onboarding'
     ) {
-      saveUserScopedLiveCache(currentUserId, {
+      const activeBizId =
+        currentUser.businessId && currentUser.businessId !== 'unassigned' && currentUser.businessId !== 'PLATFORM'
+          ? currentUser.businessId
+          : isPlatformSupportMode && activeSupportSession?.businessId
+          ? activeSupportSession.businessId
+          : undefined;
+
+      const liveDatasetPayload = {
         businesses,
         users: sanitizedUsers,
         shops,
@@ -652,8 +1064,15 @@ export default function App() {
         customRoles,
         cachedAt: new Date().toISOString(),
         ownerUserId: currentUserId,
-        businessId: currentUser.businessId,
-      });
+        businessId: activeBizId || currentUser.businessId,
+      };
+      saveUserScopedLiveCache(currentUserId, liveDatasetPayload);
+      if (activeBizId) {
+        saveBusinessScopedLiveCache(
+          activeBizId,
+          liveDatasetPayload
+        );
+      }
     }
   }, [
     dataMode,
@@ -682,24 +1101,44 @@ export default function App() {
     activeView,
     sidebarCollapsed,
     connectivityState,
+    isPlatformSupportMode,
+    activeSupportSession?.businessId,
   ]);
 
-  // Active Business for the current user (strict tenant isolation, zero fallback to DEMO_BUSINESSES)
-  const activeBusiness = useMemo<Business>(() => {
-    if (currentUser.role === 'platform_admin') {
-      return businesses[0] ?? EMPTY_BUSINESS_FALLBACK;
+  // Platform Admin has no tenant business outside a valid support session.
+const activeBusiness = useMemo<Business>(() => {
+  if (currentUser.role === 'platform_admin') {
+    if (!isPlatformSupportMode || !activeSupportSession) {
+      return EMPTY_BUSINESS_FALLBACK;
     }
+
     return (
-      businesses.find((b) => b.id === currentUser.businessId) ??
-      EMPTY_BUSINESS_FALLBACK
+      businesses.find(
+        (business) =>
+          business.id === activeSupportSession.businessId &&
+          business.status === 'active'
+      ) ?? EMPTY_BUSINESS_FALLBACK
     );
-  }, [businesses, currentUser]);
+  }
+
+  return (
+    businesses.find((business) => business.id === currentUser.businessId) ??
+    EMPTY_BUSINESS_FALLBACK
+  );
+}, [
+  businesses,
+  currentUser,
+  activeSupportSession,
+  isPlatformSupportMode,
+]);
 
   // Authorized shops for the signed-in user (enforces businessId match, suspended business check, and role/assignment rules)
-  const authorizedShops = useMemo(
-    () => getAuthorizedShopsForUser(currentUser, shops, businesses),
-    [currentUser, shops, businesses]
-  );
+  const authorizedShops = useMemo(() => {
+    if (currentUser.role === 'platform_admin' && isPlatformSupportMode && activeSupportSession) {
+      return shops.filter((s) => s.businessId === activeSupportSession.businessId);
+    }
+    return getAuthorizedShopsForUser(currentUser, shops, businesses);
+  }, [currentUser, shops, businesses, isPlatformSupportMode, activeSupportSession]);
 
   // All shops belonging to the active business
   const businessShops = useMemo(
@@ -728,11 +1167,165 @@ export default function App() {
     [currentUser, users]
   );
 
+  // In Shop Workspaces: automatically load business inter-shop product transfers
+  useEffect(() => {
+    if (activeBusiness?.id && activeBusiness.id !== 'unassigned' && dataMode !== 'demo' && liveDataService) {
+      let isCancelled = false;
+      void (async () => {
+        try {
+          const list = await liveDataService.listBusinessTransfers(activeBusiness.id);
+          if (!isCancelled) {
+            setTransfers(list);
+
+            // Auto-reconciliation: ensure transfers have source deductions and destination products reflected in Cloud Firestore
+            for (const t of list) {
+              if (t.businessId === activeBusiness.id) {
+                // A. Ensure source shop stock is deducted for transfers where source deduction was interrupted
+                if (!t.sourceDeductedAt) {
+                  let allSourceDeducted = true;
+                  let sourceShopProds: Product[] = [];
+                  try {
+                    sourceShopProds = await liveDataService.listShopProducts(t.businessId, t.sourceShopId);
+                  } catch {
+                    sourceShopProds = products.filter(
+                      (p) => p.businessId === t.businessId && p.shopId === t.sourceShopId
+                    );
+                  }
+
+                  for (const item of t.items) {
+                    const sourceProd = sourceShopProds.find(
+                      (p) =>
+                        p.id === item.productId ||
+                        p.sku.toLowerCase() === item.sku.toLowerCase() ||
+                        (p.barcode && item.barcode && p.barcode === item.barcode)
+                    );
+                    if (sourceProd) {
+                      const nextQty = Math.max(0, sourceProd.stockQuantity - item.quantity);
+                      const updatedSourceProd: Product = {
+                        ...sourceProd,
+                        stockQuantity: nextQty,
+                        updatedAt: new Date().toISOString(),
+                      };
+                      try {
+                        await liveDataService.persistLiveProduct(updatedSourceProd, { operationType: 'update' });
+                        if (!isCancelled) {
+                          setProducts((prev) =>
+                            prev.map((p) => (p.id === updatedSourceProd.id ? updatedSourceProd : p))
+                          );
+                        }
+                      } catch (err) {
+                        console.warn('Failed to deduct source product stock during reconciliation:', err);
+                        allSourceDeducted = false;
+                      }
+                    } else {
+                      allSourceDeducted = false;
+                    }
+                  }
+                  if (allSourceDeducted) {
+                    const updatedT: ProductTransfer = {
+                      ...t,
+                      sourceDeducted: true,
+                      sourceDeductedAt: new Date().toISOString(),
+                    };
+                    try {
+                      await liveDataService.saveTransfer(updatedT);
+                      if (!isCancelled) {
+                        setTransfers((prev) =>
+                          prev.map((tr) => (tr.id === updatedT.id ? updatedT : tr))
+                        );
+                      }
+                    } catch (err) {
+                      console.warn('Failed to update transfer sourceDeducted flag:', err);
+                    }
+                  }
+                }
+
+                // B. Ensure completed transfers have products in destination shop
+                if (t.status === 'completed') {
+                  for (const item of t.items) {
+                    const destProducts = products.filter(
+                      (p) => p.businessId === t.businessId && p.shopId === t.destinationShopId
+                    );
+                    const exists = destProducts.some(
+                      (p) =>
+                        p.sku.toLowerCase() === item.sku.toLowerCase() ||
+                        (p.barcode && item.barcode && p.barcode === item.barcode)
+                    );
+                    if (!exists) {
+                      const healedProdId = generateUniqueProductId(products, t.destinationShopId);
+                      const healedProd: Product = {
+                        id: healedProdId,
+                        shopId: t.destinationShopId,
+                        businessId: t.businessId,
+                        name: item.productName,
+                        sku: item.sku,
+                        barcode: item.barcode || item.sku,
+                        unit: item.unit || 'Unit',
+                        costPrice: item.costPrice || 0,
+                        sellingPrice: item.sellingPrice || 0,
+                        categoryId: `cat-${t.destinationShopId}-general`,
+                        categoryName: item.categoryName || 'General',
+                        stockQuantity: item.quantity,
+                        reorderLevel: 5,
+                        isActive: true,
+                        updatedAt: new Date().toISOString(),
+                      };
+                      try {
+                        await liveDataService.persistLiveProduct(healedProd, { operationType: 'create' });
+                        if (!isCancelled) {
+                          setProducts((prev) => {
+                            if (prev.some((p) => p.id === healedProd.id)) return prev;
+                            return [...prev, healedProd];
+                          });
+                        }
+                      } catch (healErr) {
+                        console.warn('Auto-heal transfer product error:', healErr);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to fetch business transfers:', err);
+        }
+      })();
+      return () => {
+        isCancelled = true;
+      };
+    }
+  }, [activeBusiness?.id, dataMode, liveDataService, products.length]);
+
   // Active shop object (must be within authorizedShops)
-  const activeShop = useMemo(() => {
-    if (!activeShopId) return null;
-    return authorizedShops.find((s) => s.id === activeShopId) ?? null;
-  }, [activeShopId, authorizedShops]);
+  // Support Mode resolves only the shop authorized by its server-issued session.
+const activeShop = useMemo(() => {
+  if (currentUser.role === 'platform_admin') {
+  if (!isPlatformSupportMode || !activeSupportSession || activeBusiness.id === 'unassigned') {
+      return null;
+    }
+
+    return (
+      shops.find(
+        (shop) =>
+          shop.id === activeSupportSession.shopId &&
+          shop.businessId === activeSupportSession.businessId &&
+          (shop.status === 'active' || !shop.status)
+      ) ?? null
+    );
+  }
+
+  if (!activeShopId) return null;
+
+  return authorizedShops.find((shop) => shop.id === activeShopId) ?? null;
+}, [
+  currentUser.role,
+  activeSupportSession,
+  activeBusiness.id,
+  shops,
+  activeShopId,
+  authorizedShops,
+]);
 
   // Isolated shop-scoped collections
   const activeShopCategories = useMemo(() => {
@@ -794,27 +1387,38 @@ export default function App() {
   const activeShopSuppliers = useMemo(() => {
     if (!activeShop) return [];
     return suppliers.filter(
-      (s) => s.shopId === activeShop.id && s.businessId === activeBusiness.id
+      (s) => s.businessId === activeBusiness.id && (s.shopId === activeShop.id || !s.shopId)
     );
   }, [suppliers, activeShop, activeBusiness.id]);
 
   const activeShopSupplierSupplies = useMemo(() => {
     if (!activeShop) return [];
     return supplierSupplies.filter(
-      (r) => r.shopId === activeShop.id && r.businessId === activeBusiness.id
+      (r) => r.businessId === activeBusiness.id && (r.shopId === activeShop.id || !r.shopId)
     );
   }, [supplierSupplies, activeShop, activeBusiness.id]);
 
   // Pending sync count for current context
   const pendingTransactionsCount = useMemo(() => {
     if (activeShop) {
-      const unsynced = activeShopSales.filter(
-        (s) => s.syncStatus !== 'synced_demo'
+      return activeShopSales.filter(
+        (s) =>
+          (s.syncStatus === 'pending_local_queue' ||
+            s.syncStatus === 'queued_offline_demo' ||
+            s.status === 'pending_sync') &&
+          s.syncStatus !== 'synced' &&
+          s.syncStatus !== 'synced_demo'
       ).length;
-      return Math.max(activeShop.pendingSyncCount, unsynced);
     }
-    return authorizedShops.reduce((sum, s) => sum + s.pendingSyncCount, 0);
-  }, [activeShop, activeShopSales, authorizedShops]);
+    return sales.filter(
+      (s) =>
+        (s.syncStatus === 'pending_local_queue' ||
+          s.syncStatus === 'queued_offline_demo' ||
+          s.status === 'pending_sync') &&
+        s.syncStatus !== 'synced' &&
+        s.syncStatus !== 'synced_demo'
+    ).length;
+  }, [activeShop, activeShopSales, sales]);
 
   const connectivitySnapshot: ConnectivitySnapshot = useMemo(() => {
     const effectiveState: ConnectivityState =
@@ -825,6 +1429,227 @@ export default function App() {
       pendingTransactionsCount,
     };
   }, [dataMode, connectivityState, pendingTransactionsCount]);
+
+  const handleConnectivityStateChange = (nextState: ConnectivityState) => {
+    setConnectivityState(nextState);
+    if (nextState === 'online') {
+      if (dataMode === 'offline_live' && handleRefreshLiveWorkspaceRef.current) {
+        void handleRefreshLiveWorkspaceRef.current();
+      } else if (dataMode === 'live') {
+        void syncPendingSalesWithCloud();
+      }
+    } else if (nextState === 'offline') {
+      if (dataMode === 'live') {
+        setDataMode('offline_live');
+      }
+    }
+  };
+
+  // Background cloud synchronization worker for pending offline / queued sales
+  const syncPendingSalesWithCloud = useCallback(async () => {
+    if (isSyncingPendingRef.current) return;
+    if (dataMode !== 'live' || !navigator.onLine) return;
+    if (!activeBusiness || isKnownDemoRecord(activeBusiness)) return;
+    if (!currentUser || currentUser.status !== 'active') return;
+
+    // 1. Reconcile dbAdapter sync_queue for any sales that have already synced to Cloud Firestore
+    if (dbAdapter) {
+      try {
+        const queue = await dbAdapter.getPendingSyncQueue();
+        let queueUpdated = false;
+        for (const entry of queue) {
+          if (entry.entity_type === 'sale') {
+            const matchingSale = sales.find((s) => s.id === entry.entity_id);
+            if (
+              matchingSale &&
+              (matchingSale.syncStatus === 'synced' ||
+                matchingSale.syncStatus === 'synced_demo' ||
+                matchingSale.status === 'completed')
+            ) {
+              await dbAdapter.updateSyncStatus(entry.id, 'synced', undefined, {
+                cloudAckId: `ack-reconciled-${Date.now()}`,
+              });
+              queueUpdated = true;
+            }
+          }
+        }
+        if (queueUpdated) {
+          const report = await auditLocalStorageAndIndexedDb(dbAdapter);
+          setStorageAudit(report);
+        }
+      } catch (err) {
+        console.warn('Failed to reconcile local sync queue with synced sales:', err);
+      }
+    }
+
+    const targetShopId = activeShop?.id;
+    const pendingSales = sales.filter(
+      (s) =>
+        (s.syncStatus === 'pending_local_queue' ||
+          s.syncStatus === 'queued_offline_demo' ||
+          s.status === 'pending_sync') &&
+        s.syncStatus !== 'synced' &&
+        s.syncStatus !== 'synced_demo' &&
+        (!targetShopId || s.shopId === targetShopId) &&
+        s.businessId === activeBusiness.id &&
+        !isKnownDemoRecord(s)
+    );
+
+    if (pendingSales.length === 0) return;
+
+    isSyncingPendingRef.current = true;
+    try {
+      for (const pendingSale of pendingSales) {
+        try {
+          const syncOperationId = `sync-${pendingSale.id}`;
+          const checkoutOpId = `chk-${pendingSale.shopId}-${pendingSale.id}`;
+          const ackResult = await liveDataService.persistLiveSale(
+            pendingSale,
+            [],
+            {
+              operationId: syncOperationId,
+              idempotencyKey: checkoutOpId,
+              actorUserId: isPlatformSupportMode ? pendingSale.cashierUserId : currentUser.id,
+              ...(isPlatformSupportMode && activeSupportSession
+                ? { supportSessionId: activeSupportSession.supportSessionId }
+                : {}),
+            }
+          );
+
+          if (ackResult.outcome === 'acknowledged' && ackResult.ackId) {
+            if (dbAdapter) {
+              try {
+                const queue = await dbAdapter.getPendingSyncQueue();
+                const matchingEntries = queue.filter(
+                  (q) => q.entity_id === pendingSale.id || q.id === syncOperationId
+                );
+                for (const qEntry of matchingEntries) {
+                  await dbAdapter.updateSyncStatus(qEntry.id, 'synced', undefined, {
+                    cloudAckId: ackResult.ackId,
+                  });
+                }
+              } catch (qErr) {
+                console.warn('Failed to mark local queue entry as synced in dbAdapter:', qErr);
+              }
+            }
+
+            setSales((prev) =>
+              prev.map((s) =>
+                s.id === pendingSale.id
+                  ? { ...s, status: 'completed', syncStatus: 'synced' }
+                  : s
+              )
+            );
+            setShops((prev) =>
+              prev.map((s) =>
+                s.id === pendingSale.shopId
+                  ? {
+                      ...s,
+                      pendingSyncCount: Math.max(0, s.pendingSyncCount - 1),
+                      lastSyncedAt: 'Just now (Cloud Verified)',
+                    }
+                  : s
+              )
+            );
+          }
+        } catch (err) {
+          console.warn(`Background sync failed for sale ${pendingSale.receiptNumber}:`, err);
+        }
+      }
+    } finally {
+      isSyncingPendingRef.current = false;
+      if (dbAdapter) {
+        try {
+          const report = await auditLocalStorageAndIndexedDb(dbAdapter);
+          setStorageAudit(report);
+        } catch {
+          // continue
+        }
+      }
+    }
+  }, [
+    dataMode,
+    activeShop,
+    activeBusiness,
+    currentUser,
+    sales,
+    isPlatformSupportMode,
+    activeSupportSession,
+    liveDataService,
+    dbAdapter,
+  ]);
+
+  // Sync automatically when online connectivity is restored or detected
+  useEffect(() => {
+    if (dataMode === 'live' && connectivityState === 'online' && navigator.onLine) {
+      void syncPendingSalesWithCloud();
+    }
+  }, [dataMode, connectivityState, syncPendingSalesWithCloud]);
+
+  // Listen to browser network online / offline events and run periodic auto-sync & auto-reconnect
+  useEffect(() => {
+    let isCancelled = false;
+
+    const handleOnline = async () => {
+      setConnectivityState('online');
+      if (dataMode === 'offline_live') {
+        if (!isRefreshingLiveRef.current && handleRefreshLiveWorkspaceRef.current) {
+          try {
+            await handleRefreshLiveWorkspaceRef.current();
+          } catch (err) {
+            console.warn('Auto-reconnect on network online event failed, will retry via heartbeat:', err);
+          }
+        }
+      } else if (dataMode === 'live') {
+        void syncPendingSalesWithCloud();
+      }
+    };
+
+    const handleOffline = () => {
+      setConnectivityState('offline');
+      if (dataMode === 'live') {
+        setDataMode('offline_live');
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Active heartbeat:
+    // - When in offline_live (or connectivityState === 'offline'): poll every 3 seconds to auto-reconnect as soon as internet is reachable!
+    // - When in live: poll every 15 seconds to sync any pending queue.
+    const pollIntervalMs =
+      dataMode === 'offline_live' || connectivityState === 'offline' ? 3000 : 15000;
+
+    const interval = setInterval(async () => {
+      if (isCancelled || dataMode === 'demo') return;
+
+      if (dataMode === 'offline_live' || connectivityState === 'offline') {
+        if (navigator.onLine && !isRefreshingLiveRef.current && handleRefreshLiveWorkspaceRef.current) {
+          try {
+            const isReachable = await testFirestoreConnection();
+            if (isReachable && !isCancelled) {
+              setConnectivityState('online');
+              await handleRefreshLiveWorkspaceRef.current();
+            }
+          } catch (err) {
+            console.warn('Auto-reconnect heartbeat check failed:', err);
+          }
+        }
+      } else if (dataMode === 'live') {
+        if (navigator.onLine) {
+          void syncPendingSalesWithCloud();
+        }
+      }
+    }, pollIntervalMs);
+
+    return () => {
+      isCancelled = true;
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
+    };
+  }, [dataMode, connectivityState, syncPendingSalesWithCloud]);
 
   // =========================================================================
   // LIVE SESSION RESOLUTION & DEMO MODE ISOLATION HANDLERS
@@ -890,6 +1715,9 @@ export default function App() {
     setCurrentUserId(res.user.id);
 
     if (res.user.role === 'platform_admin') {
+      if (options?.preserveWorkspaceContext && isPlatformSupportMode && activeSupportSession) {
+        return;
+      }
       setActiveShopId(null);
       setSessionStage('platform_admin');
       return;
@@ -925,68 +1753,176 @@ export default function App() {
   };
 
   const handleAuthenticatedFirebase = async (
-    identity: AuthenticatedFirebaseIdentity,
-    _rememberMe?: boolean,
-    options?: { preserveWorkspaceContext?: boolean }
-  ) => {
-    restoredUidRef.current = identity.uid;
-    setIsRefreshingLive(true);
-    setLiveErrorMessage(null);
-    try {
-      if (auth.currentUser) {
-        try {
-          await auth.currentUser.reload();
-          await auth.currentUser.getIdToken(true);
-        } catch {
-          // Non-blocking network catch
-        }
+  identity: AuthenticatedFirebaseIdentity,
+  _rememberMe?: boolean,
+  options?: { preserveWorkspaceContext?: boolean }
+) => {
+  const requestId = ++authResolutionRequestRef.current;
+
+  const isCurrentRequest = () =>
+    authResolutionRequestRef.current === requestId &&
+    auth.currentUser?.uid === identity.uid;
+
+  restoredUidRef.current = identity.uid;
+
+  setIsRefreshingLive(true);
+  setLiveErrorMessage(null);
+  setActiveSupportSession(null);
+
+  try {
+    if (auth.currentUser) {
+      try {
+        await auth.currentUser.reload();
+        await auth.currentUser.getIdToken(true);
+      } catch {
+        // The fresh session resolver remains authoritative.
       }
-      const activeUser = auth.currentUser;
-      const res = await liveDataService.resolveAuthenticatedSession({
-        uid: activeUser?.uid || identity.uid,
-        email: activeUser?.email || identity.email,
-        displayName: activeUser?.displayName || identity.displayName,
-        emailVerified: activeUser?.emailVerified ?? identity.emailVerified,
-      });
-      applyLiveResolutionResult(res, options);
-    } finally {
+    }
+
+    // Stop if another authentication request superseded this one.
+    if (!isCurrentRequest()) return;
+
+    const activeUser = auth.currentUser;
+
+    if (!activeUser || activeUser.uid !== identity.uid) {
+      return;
+    }
+
+    const res = await liveDataService.resolveAuthenticatedSession({
+      uid: activeUser.uid,
+      email: activeUser.email || identity.email,
+      displayName: activeUser.displayName || identity.displayName,
+      emailVerified: activeUser.emailVerified ?? identity.emailVerified,
+    });
+
+    // CRITICAL: Never apply a stale authentication resolution.
+    if (!isCurrentRequest()) return;
+
+    applyLiveResolutionResult(res, options);
+
+    // Recover support sessions only after fresh online resolution.
+    if (
+      res.status !== 'ready' ||
+      res.dataMode !== 'live' ||
+      res.user?.role !== 'platform_admin' ||
+      !res.dataset
+    ) {
+      return;
+    }
+
+    try {
+      const recoveryResult =
+        await callGetPlatformAdminSupportSession({});
+
+      // Authentication may have changed during the recovery request.
+      if (!isCurrentRequest()) return;
+
+      const session = recoveryResult.data;
+
+      if (!session) return;
+
+      const expiresAtMs = session.expiresAt
+        ? Date.parse(session.expiresAt)
+        : NaN;
+
+      const business = res.dataset.businesses.find(
+        (item) =>
+          item.id === session.businessId &&
+          item.status === 'active'
+      );
+
+      const shop = res.dataset.shops.find(
+        (item) =>
+          item.id === session.shopId &&
+          item.businessId === session.businessId &&
+          item.status === 'active'
+      );
+
+      const isValidSession =
+        session.status === 'active' &&
+        session.adminUid === identity.uid &&
+        typeof session.supportSessionId === 'string' &&
+        session.supportSessionId.length > 0 &&
+        typeof session.businessId === 'string' &&
+        session.businessId.length > 0 &&
+        typeof session.shopId === 'string' &&
+        session.shopId.length > 0 &&
+        Number.isFinite(expiresAtMs) &&
+        expiresAtMs > Date.now() &&
+        Boolean(business) &&
+        Boolean(shop);
+
+      if (!isCurrentRequest() || !isValidSession) {
+        return;
+      }
+
+      setActiveSupportSession(session);
+      setActiveShopId(session.shopId);
+      setActiveView('dashboard');
+      setSessionStage('workspace');
+
+    } catch (recoveryError) {
+      if (!isCurrentRequest()) return;
+
+      console.warn(
+        'Platform Admin support-session recovery failed:',
+        recoveryError
+      );
+
+      setActiveSupportSession(null);
+      setActiveShopId(null);
+      setActiveView('platform_admin');
+      setSessionStage('platform_admin');
+    }
+
+  } finally {
+    // An older request must not clear a newer request's loading state.
+    if (authResolutionRequestRef.current === requestId) {
       setIsRefreshingLive(false);
     }
-  };
+  }
+};
 
-  // Restore Firebase Authentication session once on initial mount when in Live Mode,
-  // never re-triggering on stage transitions or wiping active form inputs.
-  useEffect(() => {
-    if (dataMode === 'demo') return;
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      if (!fbUser || !fbUser.email) {
-        restoredUidRef.current = null;
-        return;
-      }
-      if (restoredUidRef.current === fbUser.uid) {
-        return;
-      }
-      restoredUidRef.current = fbUser.uid;
 
-      // Only resolve automatically if we started on the login screen (no restored session stage yet)
-      if (sessionStage === 'login') {
-        try {
-          await fbUser.reload();
-          await fbUser.getIdToken(true);
-        } catch {
-          // Non-blocking
-        }
-        handleAuthenticatedFirebase({
-          uid: fbUser.uid,
-          email: fbUser.email,
-          displayName: fbUser.displayName,
-          emailVerified: fbUser.emailVerified,
-        });
-      }
-    });
-    return () => unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataMode]);
+  // Restore Firebase Authentication once on initial mount in Live Mode.
+// Always perform fresh resolution, even if a workspace stage was persisted.
+useEffect(() => {
+  if (dataMode === 'demo') return;
+
+  const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+    if (!fbUser || !fbUser.email) {
+  ++authResolutionRequestRef.current;
+  restoredUidRef.current = null;
+  setActiveSupportSession(null);
+  setActiveShopId(null);
+  return;
+}
+
+    if (restoredUidRef.current === fbUser.uid) {
+      return;
+    }
+
+    restoredUidRef.current = fbUser.uid;
+
+    const preserveWorkspaceContext =
+      sessionStage === 'workspace';
+
+    handleAuthenticatedFirebase(
+      {
+        uid: fbUser.uid,
+        email: fbUser.email,
+        displayName: fbUser.displayName,
+        emailVerified: fbUser.emailVerified,
+      },
+      undefined,
+      { preserveWorkspaceContext }
+    );
+  });
+
+  return () => unsubscribe();
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [dataMode]);
 
   const handleRefreshLiveWorkspace = async () => {
     setIsRefreshingLive(true);
@@ -1014,12 +1950,122 @@ export default function App() {
         emailVerified,
       });
       applyLiveResolutionResult(res, { preserveWorkspaceContext: true });
+      if (currentUser.role === 'platform_admin') {
+        if (isPlatformSupportMode && activeSupportSession) {
+          try {
+            const supportData = await liveDataService.loadSupportWorkspaceData(
+              activeSupportSession.businessId,
+              activeSupportSession.shopId
+            );
+            const {
+              products: cloudProducts,
+              sales: cloudSales,
+              users: bizUsers,
+              transfers: cloudTransfers,
+              categories: cloudCategories,
+              suppliers: cloudSuppliers,
+              supplierSupplies: cloudSupplierSupplies,
+              debtCustomers: cloudCustomers,
+              invoices: cloudInvoices,
+            } = supportData;
+
+            setProducts(cloudProducts);
+            setSales(cloudSales);
+            if (cloudTransfers) {
+              setTransfers(cloudTransfers);
+            }
+            if (bizUsers.length > 0) {
+              setUsers((prev) => {
+                const existingIds = new Set(prev.map((u) => u.id));
+                const freshUsers = bizUsers.filter((u) => !existingIds.has(u.id) && !isKnownDemoRecord(u));
+                return [...prev, ...freshUsers];
+              });
+            }
+
+            if (cloudCategories && cloudCategories.length > 0) {
+              setCategories((prev) => {
+                const otherCats = prev.filter(
+                  (c) =>
+                    c.businessId !== activeSupportSession.businessId ||
+                    c.shopId !== activeSupportSession.shopId
+                );
+                return [...otherCats, ...cloudCategories];
+              });
+            }
+
+            const bizCache = loadBusinessScopedLiveCache(activeSupportSession.businessId);
+            const mergeEntities = <T extends { id: string; businessId?: string }>(
+              prev: T[],
+              incoming: T[] = []
+            ): T[] => {
+              const map = new Map<string, T>();
+              prev.forEach((item) => map.set(item.id, item));
+              incoming.forEach((item) => {
+                if (item.businessId === activeSupportSession.businessId && !isKnownDemoRecord(item as any)) {
+                  map.set(item.id, item);
+                }
+              });
+              return Array.from(map.values());
+            };
+
+            const mergedSuppliers = mergeEntities(cloudSuppliers || [], bizCache?.suppliers || []);
+            if (mergedSuppliers.length > 0) {
+              setSuppliers((prev) => mergeEntities(prev, mergedSuppliers));
+            }
+
+            const mergedSupplies = mergeEntities(cloudSupplierSupplies || [], bizCache?.supplierSupplies || []);
+            if (mergedSupplies.length > 0) {
+              setSupplierSupplies((prev) => mergeEntities(prev, mergedSupplies));
+            }
+
+            const mergedCustomers = mergeEntities(cloudCustomers || [], bizCache?.debtCustomers || []);
+            if (mergedCustomers.length > 0) {
+              setDebtCustomers((prev) => mergeEntities(prev, mergedCustomers));
+            }
+
+            if (bizCache?.debtTransactions && bizCache.debtTransactions.length > 0) {
+              setDebtTransactions((prev) => mergeEntities(prev, bizCache.debtTransactions));
+            }
+
+            const mergedInvoices = mergeEntities(cloudInvoices || [], bizCache?.invoices || []);
+            if (mergedInvoices.length > 0) {
+              setInvoices((prev) => mergeEntities(prev, mergedInvoices));
+            }
+
+            if (bizCache?.stockAdjustments && bizCache.stockAdjustments.length > 0) {
+              setStockAdjustments((prev) => mergeEntities(prev, bizCache.stockAdjustments));
+            }
+          } catch {
+            // ignore
+          }
+        } else {
+          try {
+            const [globalProducts, globalSales] = await Promise.all([
+              liveDataService.listAllProductsGlobal(),
+              liveDataService.listAllSalesGlobal(),
+            ]);
+            setProducts(globalProducts.filter((p) => !isKnownDemoRecord(p)));
+            setSales(globalSales.filter((s) => !isKnownDemoRecord(s)));
+          } catch {
+            // ignore
+          }
+        }
+      }
+      void syncPendingSalesWithCloud();
+      if (currentUser && currentUser.status === 'active' && handleRetryPendingSyncRef.current) {
+        try {
+          await handleRetryPendingSyncRef.current();
+        } catch {
+          // ignore
+        }
+      }
       const report = await auditLocalStorageAndIndexedDb(dbAdapter);
       setStorageAudit(report);
     } finally {
       setIsRefreshingLive(false);
     }
   };
+  handleRefreshLiveWorkspaceRef.current = handleRefreshLiveWorkspace;
 
   const handleConfirmClearDemoData = async () => {
     clearDemoDataSafely();
@@ -1175,15 +2221,69 @@ export default function App() {
     setSessionStage('workspace');
   };
 
-  const handleSwitchShopInWorkspace = (shopId: string) => {
+  const [isSwitchingSupportShop, setIsSwitchingSupportShop] = useState(false);
+
+  const handleSwitchShopInWorkspace = async (shopId: string) => {
     const targetShop = authorizedShops.find((s) => s.id === shopId);
     if (!targetShop) return;
+    if (targetShop.id === activeShop?.id) return;
+
+    if (
+      currentUser.role === 'platform_admin' &&
+      isPlatformSupportMode &&
+      activeSupportSession
+    ) {
+      if (isSwitchingSupportShop) return;
+      try {
+        setIsSwitchingSupportShop(true);
+        // Cleanly end the previous support session on the backend
+        try {
+          await callEndPlatformAdminSupportSession({
+            supportSessionId: activeSupportSession.supportSessionId,
+          });
+        } catch (endErr) {
+          console.warn('Note: previous support session ended or expired:', endErr);
+        }
+
+        // Start a fresh support session for the target shop under this business
+        const result = await callStartPlatformAdminSupportSession({
+          businessId: targetShop.businessId,
+          shopId: targetShop.id,
+        });
+
+        const newSession = result.data;
+        if (
+          newSession.status !== 'active' ||
+          !newSession.supportSessionId ||
+          newSession.shopId !== targetShop.id
+        ) {
+          throw new Error('The server returned an invalid or expired support-session response.');
+        }
+
+        setActiveSupportSession(newSession);
+        setActiveShopId(targetShop.id);
+        setInspectedSale(null);
+      } catch (err: any) {
+        console.error('Failed to switch support shop:', err);
+        setLiveErrorMessage(
+          err instanceof Error
+            ? `Unable to switch to ${targetShop.name}: ${err.message}`
+            : `Unable to switch to ${targetShop.name}.`
+        );
+      } finally {
+        setIsSwitchingSupportShop(false);
+      }
+      return;
+    }
+
     setActiveShopId(targetShop.id);
     setInspectedSale(null);
   };
 
   const handleSignOut = () => {
+	++authResolutionRequestRef.current;
     restoredUidRef.current = null;
+    setActiveSupportSession(null);
     clearPersistedLiveSessionMeta();
     cloudSyncService.setActiveActor(null);
     cloudBackendService.signOut().catch(() => {});
@@ -1211,7 +2311,28 @@ export default function App() {
     }
 
     const newBusinessId = generateUniqueBusinessId(businesses);
-    const cleanExplicitUid = input.ownerUid
+    const isDemo = dataMode === 'demo';
+
+    let provisionedOwnerUid: string | undefined;
+    if (!isDemo && input.ownerPassword?.trim()) {
+      try {
+        const provisioned = await provisionStaffAccount({
+          email: input.ownerEmail.trim().toLowerCase(),
+          password: input.ownerPassword.trim(),
+          fullName: input.ownerName.trim(),
+        });
+        provisionedOwnerUid = provisioned.uid;
+      } catch (err: any) {
+        setLiveErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to provision business owner authentication credentials.'
+        );
+        throw err;
+      }
+    }
+
+    const cleanExplicitUid = (provisionedOwnerUid || input.ownerUid)
       ?.trim()
       .replace(/[^a-zA-Z0-9_-]/g, '');
     const explicitFirebaseOwnerUid =
@@ -1225,7 +2346,6 @@ export default function App() {
       explicitFirebaseOwnerUid || generateUniqueUserId(users);
     const firstShopId = generateUniqueShopId(shops);
     const todayDate = getTodayYmd();
-    const isDemo = dataMode === 'demo';
     const prefix =
       input.name
         .trim()
@@ -1234,6 +2354,12 @@ export default function App() {
         .join('')
         .toUpperCase()
         .slice(0, 3) || 'SHP';
+
+    const cleanContactEmail = (
+      input.contactEmail ||
+      input.ownerEmail ||
+      ''
+    ).trim().toLowerCase();
 
     const newBusiness: Business = {
       id: newBusinessId,
@@ -1247,7 +2373,7 @@ export default function App() {
       ownerUserId: newOwnerUserId,
       ownerName: input.ownerName.trim(),
       ownerEmail: input.ownerEmail.trim().toLowerCase(),
-      contactEmail: input.contactEmail.trim().toLowerCase(),
+      contactEmail: cleanContactEmail,
       primaryPhone: input.primaryPhone.trim(),
       headquartersAddress: input.headquartersAddress.trim(),
       currencyCode: BASE_CURRENCY_CODE,
@@ -1258,34 +2384,32 @@ export default function App() {
       createdAt: todayDate,
     };
 
-    const firstShopName =
-      input.initialShopName?.trim() || `${newBusiness.name} — Main Branch`;
-    const firstShop: Shop = {
-      id: firstShopId,
-      businessId: newBusinessId,
-      code: `${prefix}-01`,
-      name: firstShopName,
-      category:
-        (input.initialShopCategory?.trim() as Shop['category']) ||
-        'Supermarket',
-      locationCity: input.initialShopCity?.trim() || 'Lagos',
-      address:
-        input.initialShopAddress?.trim() || newBusiness.headquartersAddress,
-      phone: newBusiness.primaryPhone,
-      managerName: newBusiness.ownerName,
-      status: 'active',
-      terminalId: `TERM-${prefix}01`,
-      taxRatePercent: newBusiness.defaultTaxRatePercent,
-      receiptHeaderNote: isDemo
-        ? `${firstShopName} — Demo Receipt`
-        : `${firstShopName} — Official Receipt`,
-      receiptFooterNote: isDemo
-        ? 'Prototype Receipt Only • Thank you for your patronage'
-        : 'Thank you for your patronage',
-      createdAt: todayDate,
-      pendingSyncCount: 0,
-      lastSyncedAt: isDemo ? formatPosTimestamp() : 'Cloud Synced',
-    };
+    const hasInitialShop = Boolean(input.initialShopName?.trim());
+    const firstShopName = input.initialShopName?.trim();
+    const firstShop: Shop | undefined = hasInitialShop
+      ? {
+          id: firstShopId,
+          businessId: newBusinessId,
+          code: `${prefix}-01`,
+          name: firstShopName!,
+          category:
+            (input.initialShopCategory?.trim() as Shop['category']) ||
+            'Supermarket',
+          locationCity: input.initialShopCity?.trim() || 'Lagos',
+          address:
+            input.initialShopAddress?.trim() || newBusiness.headquartersAddress,
+          phone: newBusiness.primaryPhone,
+          managerName: newBusiness.ownerName,
+          status: 'active',
+          terminalId: `TERM-${prefix}01`,
+          taxRatePercent: newBusiness.defaultTaxRatePercent,
+          receiptHeaderNote: `${firstShopName} — Official Receipt`,
+          receiptFooterNote: 'Thank you for your patronage',
+          createdAt: todayDate,
+          pendingSyncCount: 0,
+          lastSyncedAt: isDemo ? formatPosTimestamp() : 'Cloud Synced',
+        }
+      : undefined;
 
     const primaryOwnerUser: User = {
       id: newOwnerUserId,
@@ -1295,28 +2419,36 @@ export default function App() {
       fullName: input.ownerName.trim(),
       role: 'business_owner',
       roleLabel: `Business Owner (${newBusiness.name})`,
-      assignedShopIds: [firstShopId],
+      assignedShopIds: firstShop ? [firstShop.id] : [],
       permissions: [...ROLE_DEFAULT_PERMISSIONS.business_owner],
       status: 'active',
+      password: input.ownerPassword?.trim() || undefined,
+      passwordSetupStatus: 'verified',
+      emailVerified: true,
+      authUidLinked: Boolean(explicitFirebaseOwnerUid),
       createdAt: todayDate,
       lastLoginAt: formatPosTimestamp(),
     };
 
-    const firstAssignment: ShopAssignment = {
-      id: `asgn-${firstShopId}-${newOwnerUserId}`,
-      userId: newOwnerUserId,
-      businessId: newBusinessId,
-      shopId: firstShopId,
-      assignedAt: todayDate,
-      assignedByUserId: currentUser.id,
-      isActive: true,
-    };
+    const firstAssignment: ShopAssignment | undefined = firstShop
+      ? {
+          id: `asgn-${firstShop.id}-${newOwnerUserId}`,
+          userId: newOwnerUserId,
+          businessId: newBusinessId,
+          shopId: firstShop.id,
+          assignedAt: todayDate,
+          assignedByUserId: currentUser.id,
+          isActive: true,
+        }
+      : undefined;
 
     if (isDemo) {
       setBusinesses((prev) => [newBusiness, ...prev]);
       setUsers((prev) => [...prev, primaryOwnerUser]);
-      setShops((prev) => [...prev, firstShop]);
-      setShopAssignments((prev) => [...prev, firstAssignment]);
+      if (firstShop && firstAssignment) {
+        setShops((prev) => [...prev, firstShop]);
+        setShopAssignments((prev) => [...prev, firstAssignment]);
+      }
       return newBusiness;
     }
 
@@ -1333,7 +2465,14 @@ export default function App() {
       );
 
       let finalPrimaryOwner = provisioned.primaryOwner;
-      if (input.sendPasswordSetupEmail) {
+      if (input.ownerPassword?.trim()) {
+        finalPrimaryOwner = {
+          ...finalPrimaryOwner,
+          emailVerified: true,
+          passwordSetupStatus: 'verified',
+          authUidLinked: true,
+        };
+      } else if (input.sendPasswordSetupEmail) {
         try {
           const emailRes =
             await liveDataService.sendBusinessOwnerPasswordSetupEmail({
@@ -1352,14 +2491,26 @@ export default function App() {
 
       setLiveErrorMessage(null);
 
-      const canonicalShop = provisioned.firstShop ?? firstShop;
-      const canonicalAssignment: ShopAssignment = {
-        ...firstAssignment,
-        id: `asgn-${canonicalShop.id}-${finalPrimaryOwner.id}`,
-        userId: finalPrimaryOwner.id,
-        businessId: provisioned.business.id,
-        shopId: canonicalShop.id,
-      };
+      const canonicalShop = provisioned.firstShop;
+      if (canonicalShop) {
+        const canonicalAssignment: ShopAssignment = {
+          id: `asgn-${canonicalShop.id}-${finalPrimaryOwner.id}`,
+          userId: finalPrimaryOwner.id,
+          businessId: provisioned.business.id,
+          shopId: canonicalShop.id,
+          assignedAt: todayDate,
+          assignedByUserId: currentUser.id,
+          isActive: true,
+        };
+        setShops((prev) => [
+          ...prev.filter((s) => s.id !== canonicalShop.id),
+          canonicalShop,
+        ]);
+        setShopAssignments((prev) => [
+          ...prev.filter((a) => a.id !== canonicalAssignment.id),
+          canonicalAssignment,
+        ]);
+      }
 
       setBusinesses((prev) => [
         provisioned.business,
@@ -1369,21 +2520,14 @@ export default function App() {
         ...prev.filter((u) => u.id !== finalPrimaryOwner.id && u.id !== newOwnerUserId),
         finalPrimaryOwner,
       ]);
-      setShops((prev) => [
-        ...prev.filter((s) => s.id !== canonicalShop.id && s.id !== firstShopId),
-        canonicalShop,
-      ]);
-      setShopAssignments((prev) => [
-        ...prev.filter((a) => a.id !== canonicalAssignment.id && a.id !== firstAssignment.id),
-        canonicalAssignment,
-      ]);
 
       return provisioned.business;
-    } catch (err) {
+    } catch (err: any) {
+      console.error('[SmartMind POS] Business provisioning error:', err);
       const errMessage =
-        err instanceof Error
-          ? err.message
-          : 'Failed to provision business, owner, and first shop via Cloud Function.';
+        err?.message ||
+        err?.details?.message ||
+        'Failed to provision business, owner, and first shop via Cloud Function.';
       setLiveErrorMessage(errMessage);
       throw err instanceof Error ? err : new Error(errMessage);
     }
@@ -1488,7 +2632,7 @@ export default function App() {
       ...targetBiz,
       name: input.name.trim(),
       businessType: input.businessType,
-      contactEmail: input.contactEmail.trim().toLowerCase(),
+      contactEmail: (input.contactEmail || input.ownerEmail || '').trim().toLowerCase(),
       primaryPhone: input.primaryPhone.trim(),
       headquartersAddress: input.headquartersAddress.trim(),
       ownerName: input.ownerName.trim(),
@@ -1582,39 +2726,53 @@ export default function App() {
   // =========================================================================
   // PHASE 2: BUSINESS SHOP MANAGEMENT HANDLERS
   // =========================================================================
-  const handleCreateShop = (input: CreateShopInput): Shop => {
+  const handleCreateShop = async (input: CreateShopInput): Promise<Shop> => {
+    const targetBusinessId = (
+      input.businessId && input.businessId !== 'unassigned'
+        ? input.businessId
+        : (activeBusiness && activeBusiness.id !== 'unassigned' ? activeBusiness.id : '')
+    ).trim();
+
+    const targetBusiness =
+      businesses.find((b) => b.id === targetBusinessId) || activeBusiness;
+
+    const targetBusinessShops = shops.filter(
+      (s) => s.businessId === targetBusinessId
+    );
+
     const newShopId = generateUniqueShopId(shops);
-    const bizShopSeq = businessShops.length + 1;
-    const prefix = activeBusiness.name
+    const bizShopSeq = targetBusinessShops.length + 1;
+    const prefix = (targetBusiness.name || 'SHP')
       .split(' ')
       .map((w) => w[0])
       .join('')
       .toUpperCase()
-      .slice(0, 3);
-    const code = `${prefix}-0${bizShopSeq}`;
+      .slice(0, 3) || 'SHP';
+    const code = input.code?.trim() || `${prefix}-0${bizShopSeq}`;
     const todayDate = getTodayYmd();
     const isDemo = dataMode === 'demo';
 
+    const effectiveBusinessId = targetBusinessId || activeBusiness.id;
+
     const newShop: Shop = {
       id: newShopId,
-      businessId: activeBusiness.id,
+      businessId: effectiveBusinessId,
       code,
       name: input.name.trim(),
       category: input.category ?? 'Supermarket',
-      locationCity: input.locationCity?.trim() || 'Lagos',
+      locationCity: input.locationCity?.trim() || targetBusiness.headquartersAddress || 'Lagos',
       address: input.address.trim(),
-      phone: input.phone.trim(),
+      phone: input.phone.trim() || targetBusiness.primaryPhone || '+2348000000000',
       description: input.description?.trim() || undefined,
-      managerName: activeBusiness.ownerName,
+      managerName: input.managerName?.trim() || targetBusiness.ownerName || 'Shop Manager',
       status: 'active',
-      terminalId: `WIN-POS-${code.replace('-', '')}`,
-      taxRatePercent: activeBusiness.defaultTaxRatePercent,
-      receiptHeaderNote: isDemo
-        ? `${input.name.trim()} — Demo Receipt`
-        : `${input.name.trim()} — Official Receipt`,
-      receiptFooterNote: isDemo
-        ? 'Prototype Receipt Only • Thank you for your patronage'
-        : 'Thank you for your patronage',
+      terminalId: `WIN-POS-${code.replace(/[^A-Z0-9]/g, '')}`,
+      taxRatePercent:
+        typeof input.taxRatePercent === 'number'
+          ? input.taxRatePercent
+          : (targetBusiness.defaultTaxRatePercent ?? 7.5),
+      receiptHeaderNote: `${input.name.trim()} — Official Receipt`,
+      receiptFooterNote: 'Thank you for your patronage',
       createdAt: todayDate,
       pendingSyncCount: 0,
       lastSyncedAt: formatPosTimestamp(),
@@ -1624,7 +2782,7 @@ export default function App() {
     const defaultCat: ProductCategory = {
       id: `cat-${newShopId}-general`,
       shopId: newShopId,
-      businessId: activeBusiness.id,
+      businessId: effectiveBusinessId,
       name: 'General Merchandise',
       description: `Default category for ${newShop.name}`,
     };
@@ -1633,14 +2791,14 @@ export default function App() {
       {
         id: `unit-${newShopId}-unit`,
         shopId: newShopId,
-        businessId: activeBusiness.id,
+        businessId: effectiveBusinessId,
         name: 'Unit',
         abbreviation: 'unit',
       },
       {
         id: `unit-${newShopId}-pack`,
         shopId: newShopId,
-        businessId: activeBusiness.id,
+        businessId: effectiveBusinessId,
         name: 'Pack',
         abbreviation: 'pk',
       },
@@ -1652,62 +2810,78 @@ export default function App() {
 
     // Update Business Owner's assignedShopIds list for convenience
     const ownerUser = users.find(
-      (u) => u.businessId === activeBusiness.id && u.role === 'business_owner'
+      (u) => u.businessId === effectiveBusinessId && u.role === 'business_owner'
     );
     const updatedOwnerShopIds = ownerUser
       ? Array.from(new Set([...ownerUser.assignedShopIds, newShopId]))
       : [newShopId];
 
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (
-          u.businessId === activeBusiness.id &&
-          u.role === 'business_owner' &&
-          !u.assignedShopIds.includes(newShopId)
-        ) {
-          return { ...u, assignedShopIds: [...u.assignedShopIds, newShopId] };
-        }
-        return u;
-      })
-    );
+    if (ownerUser) {
+      setUsers((prev) =>
+        prev.map((u) => {
+          if (
+            u.businessId === effectiveBusinessId &&
+            u.role === 'business_owner' &&
+            !u.assignedShopIds.includes(newShopId)
+          ) {
+            return { ...u, assignedShopIds: [...u.assignedShopIds, newShopId] };
+          }
+          return u;
+        })
+      );
+    }
 
-    if (!activeShopId) {
+    if (!activeShopId && currentUser.role !== 'platform_admin') {
       setActiveShopId(newShopId);
     }
 
     if (!isDemo) {
-      liveDataService
-        .persistLiveShop(
+      try {
+        await liveDataService.persistLiveShop(
           newShop,
-          ownerUser?.id || currentUser.id,
+          ownerUser?.id || (currentUser.role === 'platform_admin' ? undefined : currentUser.id),
           updatedOwnerShopIds
-        )
-        .catch((err) => {
-          setLiveErrorMessage(
-            err instanceof Error
-              ? err.message
-              : 'Failed to persist new shop to Cloud Firestore.'
-          );
-        });
+        );
+        setLiveErrorMessage(null);
+      } catch (err: any) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Failed to persist new shop to Cloud Firestore.';
+        setLiveErrorMessage(msg);
+        console.error('[handleCreateShop] persistLiveShop failed:', err);
+        setShops((prev) => prev.filter((s) => s.id !== newShopId));
+        throw err;
+      }
     }
 
     return newShop;
   };
 
-  const handleUpdateShop = (shopId: string, input: CreateShopInput) => {
-    const existingShop = shops.find(
-      (s) => s.id === shopId && s.businessId === activeBusiness.id
-    );
+  const handleUpdateShop = async (
+    shopId: string,
+    input: CreateShopInput | Partial<Shop>
+  ): Promise<void> => {
+    const existingShop = shops.find((s) => s.id === shopId);
     if (!existingShop) return;
 
     const updatedShop: Shop = {
       ...existingShop,
-      name: input.name.trim(),
-      address: input.address.trim(),
+      name: input.name !== undefined ? input.name.trim() : existingShop.name,
+      address: input.address !== undefined ? input.address.trim() : existingShop.address,
       locationCity: input.locationCity?.trim() || existingShop.locationCity,
-      phone: input.phone.trim(),
+      phone: input.phone !== undefined ? input.phone.trim() : existingShop.phone,
       category: input.category ?? existingShop.category,
-      description: input.description?.trim() || undefined,
+      description:
+        input.description !== undefined
+          ? input.description?.trim() || undefined
+          : existingShop.description,
+      managerName: input.managerName?.trim() || existingShop.managerName,
+      code: input.code?.trim() || existingShop.code,
+      taxRatePercent:
+        typeof input.taxRatePercent === 'number'
+          ? input.taxRatePercent
+          : existingShop.taxRatePercent,
     };
 
     setShops((prev) =>
@@ -1716,43 +2890,43 @@ export default function App() {
 
     if (dataMode !== 'demo') {
       const ownerUser = users.find(
-        (u) => u.businessId === activeBusiness.id && u.role === 'business_owner'
+        (u) => u.businessId === existingShop.businessId && u.role === 'business_owner'
       );
-      liveDataService
-        .persistLiveShop(
+      try {
+        await liveDataService.persistLiveShop(
           updatedShop,
-          ownerUser?.id || currentUser.id,
+          ownerUser?.id || (currentUser.role === 'platform_admin' ? undefined : currentUser.id),
           ownerUser?.assignedShopIds || []
-        )
-        .catch((err) => {
-          setLiveErrorMessage(
-            err instanceof Error
-              ? err.message
-              : 'Failed to update shop in Cloud Firestore.'
-          );
-        });
+        );
+        setLiveErrorMessage(null);
+      } catch (err: any) {
+        setLiveErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to update shop in Cloud Firestore.'
+        );
+        throw err;
+      }
     }
   };
 
   const handleToggleShopStatus = (shopId: string, nextStatus: ShopStatus) => {
-    const existingShop = shops.find(
-      (s) => s.id === shopId && s.businessId === activeBusiness.id
-    );
+    const existingShop = shops.find((s) => s.id === shopId);
+    if (!existingShop) return;
+
     setShops((prev) =>
       prev.map((s) =>
-        s.id === shopId && s.businessId === activeBusiness.id
-          ? { ...s, status: nextStatus }
-          : s
+        s.id === shopId ? { ...s, status: nextStatus } : s
       )
     );
-    if (dataMode !== 'demo' && existingShop) {
+    if (dataMode !== 'demo') {
       const ownerUser = users.find(
-        (u) => u.businessId === activeBusiness.id && u.role === 'business_owner'
+        (u) => u.businessId === existingShop.businessId && u.role === 'business_owner'
       );
       liveDataService
         .persistLiveShop(
           { ...existingShop, status: nextStatus },
-          ownerUser?.id || currentUser.id,
+          ownerUser?.id || (currentUser.role === 'platform_admin' ? undefined : currentUser.id),
           ownerUser?.assignedShopIds || []
         )
         .catch((err) => {
@@ -1823,8 +2997,28 @@ export default function App() {
     return { success: true };
   };
 
-  const handleCreateStaff = (input: CreateStaffInput): User => {
-    const newUserId = generateUniqueUserId(users);
+  const handleCreateStaff = async (input: CreateStaffInput): Promise<User> => {
+    let explicitStaffUid: string | undefined;
+
+    if (dataMode !== 'demo' && input.password?.trim()) {
+      try {
+        const provisioned = await provisionStaffAccount({
+          email: input.email,
+          password: input.password.trim(),
+          fullName: input.fullName,
+        });
+        explicitStaffUid = provisioned.uid;
+      } catch (err: any) {
+        setLiveErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to provision staff authentication credentials.'
+        );
+        throw err;
+      }
+    }
+
+    const newUserId = explicitStaffUid || generateUniqueUserId(users);
     const todayDate = getTodayYmd();
     const roleTitle =
       input.roleLabel ||
@@ -1841,6 +3035,7 @@ export default function App() {
       customRoleId: input.customRoleId,
       assignedShopIds: [...input.assignedShopIds],
       permissions: [...input.permissions],
+      password: input.password?.trim() || undefined,
       status: 'active',
       createdAt: todayDate,
       lastLoginAt: 'Never (Newly Created)',
@@ -1863,37 +3058,40 @@ export default function App() {
 
     if (dataMode !== 'demo') {
       const idempotencyKey = `invite-staff-${activeBusiness.id}-${newUserId}-${Date.now()}`;
-      liveDataService
-        .inviteLiveStaffUser(newStaff, {
+      try {
+        const invited = await liveDataService.inviteLiveStaffUser(newStaff, {
           idempotencyKey,
-        })
-        .then((invited) => {
-          setUsers((prevU) => {
-            setShopAssignments((prevA) => {
-              const reconciled = reconcileInvitedStaffState(
-                { users: prevU, shopAssignments: prevA },
-                newUserId,
-                invited.staffUser
-              );
-              return reconciled.shopAssignments;
-            });
-            return prevU.map((u) =>
-              u.id === newUserId ? invited.staffUser : u
+          explicitStaffUid,
+          ...(isPlatformSupportMode && activeSupportSession?.supportSessionId
+            ? { supportSessionId: activeSupportSession.supportSessionId }
+            : {}),
+        });
+        setUsers((prevU) => {
+          setShopAssignments((prevA) => {
+            const reconciled = reconcileInvitedStaffState(
+              { users: prevU, shopAssignments: prevA },
+              newUserId,
+              invited.staffUser
             );
+            return reconciled.shopAssignments;
           });
-        })
-        .catch((err) => {
-          const assignmentIds = new Set(newAssignments.map((a) => a.id));
-          setUsers((prev) => prev.filter((u) => u.id !== newUserId));
-          setShopAssignments((prev) =>
-            prev.filter((a) => !assignmentIds.has(a.id) && a.userId !== newUserId)
-          );
-          setLiveErrorMessage(
-            err instanceof Error
-              ? err.message
-              : 'Failed to invite staff user via Cloud Function.'
+          return prevU.map((u) =>
+            u.id === newUserId ? invited.staffUser : u
           );
         });
+      } catch (err: any) {
+        const assignmentIds = new Set(newAssignments.map((a) => a.id));
+        setUsers((prev) => prev.filter((u) => u.id !== newUserId));
+        setShopAssignments((prev) =>
+          prev.filter((a) => !assignmentIds.has(a.id) && a.userId !== newUserId)
+        );
+        setLiveErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to invite staff user via Cloud Function.'
+        );
+        throw err;
+      }
     }
 
     return newStaff;
@@ -2039,12 +3237,38 @@ export default function App() {
     );
   };
 
-  const handleResetUserPassword = (userId: string, newPassword: string) => {
+  const handleResetUserPassword = async (userId: string, newPassword: string) => {
     const nowFormatted = formatPosTimestamp();
+    const targetUser = users.find((u) => u.id === userId);
+    if (!targetUser) {
+      throw new Error('User not found.');
+    }
+    if (!canActorResetUserPassword(currentUser, targetUser)) {
+      const msg = 'PERMISSION_DENIED: You do not have permission to reset this user\'s password.';
+      setLiveErrorMessage(msg);
+      throw new Error(msg);
+    }
+
+    if (dataMode !== 'demo') {
+      try {
+        await liveDataService.resetLiveUserPassword({
+          targetUserId: targetUser.id,
+          targetEmail: targetUser.email,
+          newPassword,
+        });
+      } catch (err: any) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Failed to reset password in Firebase Authentication.';
+        setLiveErrorMessage(msg);
+        throw err instanceof Error ? err : new Error(msg);
+      }
+    }
+
     setUsers((prev) =>
       prev.map((u) => {
         if (u.id !== userId) return u;
-        if (!canActorResetUserPassword(currentUser, u)) return u;
         return applyUserPasswordReset(u, newPassword, nowFormatted);
       })
     );
@@ -2177,78 +3401,91 @@ export default function App() {
     if (isAuthorizedLiveTenantCheckout) {
       const checkoutOpId = `chk-${activeShop.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const syncOperationId = `sync-${canonicalSaleId}`;
-      saleFinalizationService
-        .finalizeSale({
-          saleId: canonicalSaleId,
-          dataMode,
-          businessId: activeBusiness.id,
-          shopId: activeShop.id,
-          user: currentUser,
-          cart,
-          paymentMethod,
-          discountAmount,
-          taxRatePercent: activeShop.taxRatePercent,
-          taxAmount,
-          totalAmount,
-          amountTendered: effectiveTendered,
-          paymentReference: isCreditSale
-            ? paymentReference || `CREDIT-${receiptNumber}`
-            : paymentReference,
-          creditCustomerId: creditCustomer?.id,
-          creditCustomerName: creditCustomer?.fullName,
-          creditCustomerPhone: creditCustomer?.phone,
-          notes:
-            isCreditSale && creditCustomer
-              ? `Credit Sale to ${creditCustomer.fullName} (${creditCustomer.phone})`
-              : 'POS checkout',
-          terminalId: activeShop.terminalId,
-          checkoutOperationId: checkoutOpId,
-          receiptNumber,
-        })
-        .then(async () => {
-          if (dataMode !== 'live') return;
-          const ackResult = await liveDataService.persistLiveSale(
-            newSale,
-            [],
-            {
-              operationId: syncOperationId,
-              idempotencyKey: checkoutOpId,
-              actorUserId: currentUser.id,
-            }
-          );
-          if (ackResult.outcome === 'acknowledged' && ackResult.ackId) {
-            setSales((prev) =>
-              prev.map((s) =>
-                s.id === canonicalSaleId
-                  ? { ...s, status: 'completed', syncStatus: 'synced' }
-                  : s
-              )
+      (async () => {
+        try {
+          await saleFinalizationService.finalizeSale({
+            saleId: canonicalSaleId,
+            dataMode,
+            businessId: activeBusiness.id,
+            shopId: activeShop.id,
+            user: currentUser,
+            cart,
+            paymentMethod,
+            discountAmount,
+            taxRatePercent: activeShop.taxRatePercent,
+            taxAmount,
+            totalAmount,
+            amountTendered: effectiveTendered,
+            paymentReference: isCreditSale
+              ? paymentReference || `CREDIT-${receiptNumber}`
+              : paymentReference,
+            creditCustomerId: creditCustomer?.id,
+            creditCustomerName: creditCustomer?.fullName,
+            creditCustomerPhone: creditCustomer?.phone,
+            notes:
+              isCreditSale && creditCustomer
+                ? `Credit Sale to ${creditCustomer.fullName} (${creditCustomer.phone})`
+                : 'POS checkout',
+            terminalId: activeShop.terminalId,
+            checkoutOperationId: checkoutOpId,
+            receiptNumber,
+          });
+        } catch (localErr) {
+          console.warn('Local sale finalization warning:', localErr);
+        }
+
+        if (dataMode === 'live' && navigator.onLine) {
+          try {
+            const ackResult = await liveDataService.persistLiveSale(
+              newSale,
+              [],
+              {
+                operationId: syncOperationId,
+                idempotencyKey: checkoutOpId,
+                actorUserId: isPlatformSupportMode ? newSale.cashierUserId : currentUser.id,
+                ...(isPlatformSupportMode && activeSupportSession
+                  ? { supportSessionId: activeSupportSession.supportSessionId }
+                  : {}),
+              }
             );
-            setShops((prev) =>
-              prev.map((s) =>
-                s.id === activeShop.id
-                  ? {
-                      ...s,
-                      pendingSyncCount: Math.max(0, s.pendingSyncCount - 1),
-                      lastSyncedAt: 'Just now (Cloud Verified)',
-                    }
-                  : s
-              )
+            if (ackResult.outcome === 'acknowledged' && ackResult.ackId) {
+              setSales((prev) =>
+                prev.map((s) =>
+                  s.id === canonicalSaleId
+                    ? { ...s, status: 'completed', syncStatus: 'synced' }
+                    : s
+                )
+              );
+              setShops((prev) =>
+                prev.map((s) =>
+                  s.id === activeShop.id
+                    ? {
+                        ...s,
+                        pendingSyncCount: Math.max(0, s.pendingSyncCount - 1),
+                        lastSyncedAt: 'Just now (Cloud Verified)',
+                      }
+                    : s
+                )
+              );
+            }
+          } catch (err) {
+            console.warn(
+              'Sale preserved locally in pending sync queue for auto-sync:',
+              err instanceof Error ? err.message : String(err)
             );
           }
-        })
-        .catch((err) => {
-          console.warn(
-            'Sale preserved locally in pending sync queue:',
-            err?.message || err
-          );
-        });
+        }
+      })();
     }
 
     return newSale;
   };
 
   const handleDeleteProduct = (productId: string) => {
+    if (isPlatformSupportMode) {
+      setLiveErrorMessage('Product deletion is not available in Platform Admin Support Mode.');
+      return;
+    }
     if (!activeShop) return;
     setProducts((prev) =>
       prev.filter((p) => !(p.id === productId && p.shopId === activeShop.id))
@@ -2294,8 +3531,10 @@ export default function App() {
         unit: input.unit.trim() || 'Unit',
         costPrice: input.costPrice,
         sellingPrice: input.sellingPrice,
-        stockQuantity: input.stockQuantity,
+        stockQuantity: existingProduct.stockQuantity,
         reorderLevel: input.reorderLevel,
+        hasExpiry: Boolean(input.hasExpiry),
+        expiryDate: input.hasExpiry && input.expiryDate ? input.expiryDate.trim() : null,
         updatedAt: formatPosTimestamp(),
       };
 
@@ -2308,7 +3547,12 @@ export default function App() {
       );
 
       if (dataMode !== 'demo') {
-        liveDataService.persistLiveProduct(updatedProduct).catch((err) => {
+        liveDataService.persistLiveProduct(updatedProduct, {
+          operationType: 'update',
+          ...(isPlatformSupportMode && activeSupportSession
+            ? { supportSessionId: activeSupportSession.supportSessionId }
+            : {}),
+        }).catch((err) => {
           setLiveErrorMessage(
             err instanceof Error
               ? err.message
@@ -2331,13 +3575,20 @@ export default function App() {
         sellingPrice: input.sellingPrice,
         stockQuantity: input.stockQuantity,
         reorderLevel: input.reorderLevel,
+        hasExpiry: Boolean(input.hasExpiry),
+        expiryDate: input.hasExpiry && input.expiryDate ? input.expiryDate.trim() : null,
         isActive: true,
         updatedAt: formatPosTimestamp(),
       };
       setProducts((prev) => [newProduct, ...prev]);
 
       if (dataMode !== 'demo') {
-        liveDataService.persistLiveProduct(newProduct).catch((err) => {
+        liveDataService.persistLiveProduct(newProduct, {
+          operationType: 'create',
+          ...(isPlatformSupportMode && activeSupportSession
+            ? { supportSessionId: activeSupportSession.supportSessionId }
+            : {}),
+        }).catch((err) => {
           setLiveErrorMessage(
             err instanceof Error
               ? err.message
@@ -2373,7 +3624,13 @@ export default function App() {
     setStockAdjustments((prev) => [adjustment, ...prev]);
 
     if (dataMode !== 'demo') {
-      liveDataService.persistLiveProduct(updatedProduct).catch(() => {});
+      liveDataService.persistInventoryMovement(adjustment,
+        isPlatformSupportMode && activeSupportSession
+          ? activeSupportSession.supportSessionId
+          : undefined
+      ).catch((err) => {
+        setLiveErrorMessage(err instanceof Error ? err.message : 'Failed to synchronize inventory movement.');
+      });
     }
   };
 
@@ -2382,6 +3639,10 @@ export default function App() {
     updatedQuantitiesByLineId: Record<string, number>,
     reason: string
   ) => {
+    if (isPlatformSupportMode) {
+      setLiveErrorMessage('Receipt returns are not available in Platform Admin Support Mode.');
+      return;
+    }
     if (!activeShop) return;
     const targetSale = activeShopSales.find((s) => s.id === saleId);
     if (!targetSale) return;
@@ -2456,6 +3717,31 @@ export default function App() {
     if (newAdjustments.length > 0) {
       setStockAdjustments((prev) => [...newAdjustments, ...prev]);
     }
+
+    // 5. In live mode: persist the receipt return & stock restoration to Cloud Firestore atomically
+    if (dataMode !== 'demo' && liveDataService) {
+      liveDataService
+        .processLiveReceiptReturn({
+          businessId: activeBusiness.id,
+          shopId: activeShop.id,
+          saleId,
+          updatedSale: result.updatedSale,
+          returnedItems: result.returnedItems,
+          reason,
+          supportSessionId:
+            isPlatformSupportMode && activeSupportSession
+              ? activeSupportSession.supportSessionId
+              : undefined,
+        })
+        .catch((err) => {
+          console.error('Failed to sync receipt return to cloud:', err);
+          setLiveErrorMessage(
+            err instanceof Error
+              ? err.message
+              : 'Failed to synchronize receipt return to cloud.'
+          );
+        });
+    }
   };
 
   const handleAddCategory = (
@@ -2494,6 +3780,418 @@ export default function App() {
     return newUnit;
   };
 
+  const handleInitiateTransfer = async (
+    transferInput: Omit<ProductTransfer, 'id' | 'transferNumber' | 'createdAt' | 'updatedAt'>
+  ): Promise<ProductTransfer> => {
+    const transferId = `trf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const transferCount = transfers.length + 1;
+    const transferNumber = `TRF-${new Date().getFullYear()}-${String(transferCount).padStart(4, '0')}`;
+    const nowIso = new Date().toISOString();
+
+    let allSourceDeducted = true;
+    const updatedSourceProds: Product[] = [];
+
+    // 1. Immediately deduct transferred quantities from source shop stock in state and Firestore
+    for (const item of transferInput.items) {
+      const sourceProd = products.find(
+        (p) => p.id === item.productId && p.shopId === transferInput.sourceShopId
+      );
+      if (sourceProd) {
+        const nextQty = Math.max(0, sourceProd.stockQuantity - item.quantity);
+        const updatedSourceProd: Product = {
+          ...sourceProd,
+          stockQuantity: nextQty,
+          updatedAt: nowIso,
+        };
+
+        if (dataMode !== 'demo' && liveDataService) {
+          try {
+            await liveDataService.persistLiveProduct(updatedSourceProd, {
+              operationType: 'update',
+              supportSessionId: activeSupportSession?.supportSessionId,
+            });
+
+            // Record source shop inventory movement
+            await liveDataService.persistInventoryMovement({
+              id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              shopId: transferInput.sourceShopId,
+              businessId: transferInput.businessId,
+              productId: sourceProd.id,
+              productName: sourceProd.name,
+              productSku: sourceProd.sku,
+              type: 'audit_correction',
+              quantityDelta: -item.quantity,
+              previousQuantity: sourceProd.stockQuantity,
+              newQuantity: nextQty,
+              reason: `Transfer dispatched to ${transferInput.destinationShopName} (${transferNumber})`,
+              referenceId: transferNumber,
+              performedByUserId: currentUser.id,
+              performedByName: currentUser.fullName,
+              createdAt: nowIso,
+              syncStatus: 'synced',
+            });
+          } catch (err) {
+            console.error('Failed to persist source stock deduction during transfer initiation:', err);
+            allSourceDeducted = false;
+          }
+        }
+
+        updatedSourceProds.push(updatedSourceProd);
+      }
+    }
+
+    if (updatedSourceProds.length > 0) {
+      setProducts((prev) => {
+        const updatedMap = new Map(updatedSourceProds.map((p) => [p.id, p]));
+        return prev.map((p) => updatedMap.get(p.id) || p);
+      });
+    }
+
+    const newTransfer: ProductTransfer = {
+      ...transferInput,
+      id: transferId,
+      transferNumber,
+      sourceDeducted: allSourceDeducted,
+      sourceDeductedAt: allSourceDeducted ? nowIso : undefined,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    // 2. Persist the transfer record
+    if (dataMode !== 'demo' && liveDataService) {
+      try {
+        await liveDataService.saveTransfer(newTransfer);
+      } catch (err) {
+        console.warn('Network offline or error persisting transfer online, retained locally for auto-sync:', err);
+      }
+    }
+
+    setTransfers((prev) => [newTransfer, ...prev]);
+    return newTransfer;
+  };
+
+  const handleConfirmTransfer = async (
+    transferId: string,
+    confirmedItems?: { productId: string; receivedQuantity: number }[]
+  ): Promise<void> => {
+    const transfer = transfers.find((t) => t.id === transferId);
+    if (!transfer) throw new Error('Transfer not found');
+    if (transfer.status !== 'pending') throw new Error('Transfer is not pending');
+
+    const nowIso = new Date().toISOString();
+    const confirmedMap = new Map(
+      (confirmedItems || []).map((ci) => [ci.productId, ci.receivedQuantity])
+    );
+
+    // 1. Add transferred items to destination shop stock immediately
+    for (const item of transfer.items) {
+      const receivedQty = confirmedMap.has(item.productId)
+        ? confirmedMap.get(item.productId)!
+        : item.quantity;
+      if (receivedQty <= 0) continue;
+
+      // Look up if product already exists in destination shop by SKU or barcode
+      const existingDestProd = products.find(
+        (p) =>
+          p.businessId === transfer.businessId &&
+          p.shopId === transfer.destinationShopId &&
+          (p.sku.toLowerCase() === item.sku.toLowerCase() ||
+            (p.barcode && item.barcode && p.barcode === item.barcode))
+      );
+
+      if (existingDestProd) {
+        const nextQty = existingDestProd.stockQuantity + receivedQty;
+        const updatedDestProd: Product = {
+          ...existingDestProd,
+          stockQuantity: nextQty,
+          updatedAt: nowIso,
+        };
+
+        if (dataMode !== 'demo' && liveDataService) {
+          try {
+            await liveDataService.persistLiveProduct(updatedDestProd, {
+              operationType: 'update',
+              supportSessionId: activeSupportSession?.supportSessionId,
+            });
+          } catch (err) {
+            console.error('Failed to update destination product in Cloud Firestore:', err);
+            setLiveErrorMessage(
+              err instanceof Error ? err.message : 'Failed to update destination product in Cloud Firestore.'
+            );
+          }
+
+          try {
+            await liveDataService.persistInventoryMovement({
+              id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              shopId: transfer.destinationShopId,
+              businessId: transfer.businessId,
+              productId: existingDestProd.id,
+              productName: existingDestProd.name,
+              productSku: existingDestProd.sku,
+              type: 'audit_correction',
+              quantityDelta: receivedQty,
+              previousQuantity: existingDestProd.stockQuantity,
+              newQuantity: nextQty,
+              reason: `Transfer received from ${transfer.sourceShopName} (${transfer.transferNumber})`,
+              referenceId: transfer.transferNumber,
+              performedByUserId: currentUser.id,
+              performedByName: currentUser.fullName,
+              createdAt: nowIso,
+              syncStatus: 'synced',
+            });
+          } catch {
+            // continue
+          }
+        }
+
+        setProducts((prev) =>
+          prev.map((p) => (p.id === updatedDestProd.id ? updatedDestProd : p))
+        );
+      } else {
+        // Create product in destination shop
+        const newDestProdId = generateUniqueProductId(products, transfer.destinationShopId);
+        const newDestProd: Product = {
+          id: newDestProdId,
+          shopId: transfer.destinationShopId,
+          businessId: transfer.businessId,
+          name: item.productName,
+          sku: item.sku,
+          barcode: item.barcode || item.sku,
+          unit: item.unit,
+          costPrice: item.costPrice || 0,
+          sellingPrice: item.sellingPrice || 0,
+          categoryId: `cat-${transfer.destinationShopId}-general`,
+          categoryName: item.categoryName || 'General',
+          stockQuantity: receivedQty,
+          reorderLevel: 5,
+          isActive: true,
+          updatedAt: nowIso,
+        };
+
+        if (dataMode !== 'demo' && liveDataService) {
+          try {
+            await liveDataService.persistLiveProduct(newDestProd, {
+              operationType: 'create',
+              supportSessionId: activeSupportSession?.supportSessionId,
+            });
+          } catch (err) {
+            console.error('Failed to persist transferred product to Cloud Firestore:', err);
+            setLiveErrorMessage(
+              err instanceof Error ? err.message : 'Failed to save transferred product to Cloud Firestore.'
+            );
+          }
+
+          try {
+            await liveDataService.persistInventoryMovement({
+              id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              shopId: transfer.destinationShopId,
+              businessId: transfer.businessId,
+              productId: newDestProd.id,
+              productName: newDestProd.name,
+              productSku: newDestProd.sku,
+              type: 'audit_correction',
+              quantityDelta: receivedQty,
+              previousQuantity: 0,
+              newQuantity: receivedQty,
+              reason: `Initial stock from transfer received from ${transfer.sourceShopName} (${transfer.transferNumber})`,
+              referenceId: transfer.transferNumber,
+              performedByUserId: currentUser.id,
+              performedByName: currentUser.fullName,
+              createdAt: nowIso,
+              syncStatus: 'synced',
+            });
+          } catch {
+            // continue
+          }
+        }
+
+        setProducts((prev) => [...prev, newDestProd]);
+      }
+    }
+
+    // 2. Mark transfer completed
+    const updatedTransfer: ProductTransfer = {
+      ...transfer,
+      status: 'completed',
+      confirmedByUserId: currentUser.id,
+      confirmedByUserName: currentUser.fullName,
+      confirmedAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    if (dataMode !== 'demo' && liveDataService) {
+      try {
+        await liveDataService.saveTransfer(updatedTransfer);
+      } catch (err) {
+        console.warn('Network offline or error confirming transfer online, updated locally for sync:', err);
+      }
+    }
+
+    setTransfers((prev) =>
+      prev.map((t) => (t.id === updatedTransfer.id ? updatedTransfer : t))
+    );
+  };
+
+  const handleRejectTransfer = async (
+    transferId: string,
+    reason: string
+  ): Promise<void> => {
+    const transfer = transfers.find((t) => t.id === transferId);
+    if (!transfer) throw new Error('Transfer not found');
+    const nowIso = new Date().toISOString();
+
+    // Restore stock to source shop only if it was deducted
+    if (transfer.sourceDeducted || transfer.sourceDeductedAt) {
+      for (const item of transfer.items) {
+        const sourceProd = products.find(
+          (p) => p.id === item.productId && p.shopId === transfer.sourceShopId
+        );
+        if (sourceProd) {
+          const nextQty = sourceProd.stockQuantity + item.quantity;
+          const restoredSourceProd: Product = {
+            ...sourceProd,
+            stockQuantity: nextQty,
+            updatedAt: nowIso,
+          };
+
+          if (dataMode !== 'demo' && liveDataService) {
+            try {
+              await liveDataService.persistLiveProduct(restoredSourceProd, {
+                operationType: 'update',
+                supportSessionId: activeSupportSession?.supportSessionId,
+              });
+
+              await liveDataService.persistInventoryMovement({
+                id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                shopId: transfer.sourceShopId,
+                businessId: transfer.businessId,
+                productId: sourceProd.id,
+                productName: sourceProd.name,
+                productSku: sourceProd.sku,
+                type: 'audit_correction',
+                quantityDelta: item.quantity,
+                previousQuantity: sourceProd.stockQuantity,
+                newQuantity: nextQty,
+                reason: `Stock restored from rejected transfer (${transfer.transferNumber}): ${reason}`,
+                referenceId: transfer.transferNumber,
+                performedByUserId: currentUser.id,
+                performedByName: currentUser.fullName,
+                createdAt: nowIso,
+                syncStatus: 'synced',
+              });
+            } catch {
+              // continue
+            }
+          }
+
+          setProducts((prev) =>
+            prev.map((p) => (p.id === restoredSourceProd.id ? restoredSourceProd : p))
+          );
+        }
+      }
+    }
+
+    const updatedTransfer: ProductTransfer = {
+      ...transfer,
+      status: 'rejected',
+      rejectionReason: reason,
+      rejectedByUserId: currentUser.id,
+      rejectedByUserName: currentUser.fullName,
+      rejectedAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    if (dataMode !== 'demo' && liveDataService) {
+      try {
+        await liveDataService.saveTransfer(updatedTransfer);
+      } catch (err) {
+        console.warn('Network offline or error confirming transfer online, updated locally for sync:', err);
+      }
+    }
+
+    setTransfers((prev) =>
+      prev.map((t) => (t.id === updatedTransfer.id ? updatedTransfer : t))
+    );
+  };
+
+  const handleCancelTransfer = async (transferId: string): Promise<void> => {
+    const transfer = transfers.find((t) => t.id === transferId);
+    if (!transfer) throw new Error('Transfer not found');
+    const nowIso = new Date().toISOString();
+
+    // Restore stock to source shop only if it was deducted
+    if (transfer.sourceDeducted || transfer.sourceDeductedAt) {
+      for (const item of transfer.items) {
+        const sourceProd = products.find(
+          (p) => p.id === item.productId && p.shopId === transfer.sourceShopId
+        );
+        if (sourceProd) {
+          const nextQty = sourceProd.stockQuantity + item.quantity;
+          const restoredSourceProd: Product = {
+            ...sourceProd,
+            stockQuantity: nextQty,
+            updatedAt: nowIso,
+          };
+
+          if (dataMode !== 'demo' && liveDataService) {
+            try {
+              await liveDataService.persistLiveProduct(restoredSourceProd, {
+                operationType: 'update',
+                supportSessionId: activeSupportSession?.supportSessionId,
+              });
+
+              await liveDataService.persistInventoryMovement({
+                id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                shopId: transfer.sourceShopId,
+                businessId: transfer.businessId,
+                productId: sourceProd.id,
+                productName: sourceProd.name,
+                productSku: sourceProd.sku,
+                type: 'audit_correction',
+                quantityDelta: item.quantity,
+                previousQuantity: sourceProd.stockQuantity,
+                newQuantity: nextQty,
+                reason: `Stock restored from cancelled transfer (${transfer.transferNumber})`,
+                referenceId: transfer.transferNumber,
+                performedByUserId: currentUser.id,
+                performedByName: currentUser.fullName,
+                createdAt: nowIso,
+                syncStatus: 'synced',
+              });
+            } catch {
+              // continue
+            }
+          }
+
+          setProducts((prev) =>
+            prev.map((p) => (p.id === restoredSourceProd.id ? restoredSourceProd : p))
+          );
+        }
+      }
+    }
+
+    const updatedTransfer: ProductTransfer = {
+      ...transfer,
+      status: 'cancelled',
+      rejectedByUserId: currentUser.id,
+      rejectedByUserName: currentUser.fullName,
+      rejectedAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    if (dataMode !== 'demo' && liveDataService) {
+      try {
+        await liveDataService.saveTransfer(updatedTransfer);
+      } catch (err) {
+        console.warn('Network offline or error confirming transfer online, updated locally for sync:', err);
+      }
+    }
+
+    setTransfers((prev) =>
+      prev.map((t) => (t.id === updatedTransfer.id ? updatedTransfer : t))
+    );
+  };
+
   const handleUpdateShopSettings = (
     shopId: string,
     updates: Partial<
@@ -2502,14 +4200,109 @@ export default function App() {
         | 'name'
         | 'phone'
         | 'taxRatePercent'
+        | 'vatEnabled'
+        | 'printVatOnReceipt'
         | 'receiptHeaderNote'
         | 'receiptFooterNote'
         | 'printerSettings'
       >
     >
   ) => {
+    let targetShop: Shop | null = null;
     setShops((prev) =>
-      prev.map((s) => (s.id === shopId ? { ...s, ...updates } : s))
+      prev.map((s) => {
+        if (s.id === shopId) {
+          targetShop = { ...s, ...updates };
+          return targetShop;
+        }
+        return s;
+      })
+    );
+
+    if (targetShop) {
+      const persistedShop: Shop = targetShop;
+      if (dataMode !== 'demo') {
+        liveDataService.persistLiveShop(persistedShop).catch((err) => {
+          console.error('Failed to persist shop settings to Cloud Firestore:', err);
+        });
+      } else {
+        void dbAdapter.saveShop({
+          id: persistedShop.id,
+          business_id: persistedShop.businessId,
+          code: persistedShop.code,
+          name: persistedShop.name,
+          category: persistedShop.category,
+          location_city: persistedShop.locationCity,
+          address: persistedShop.address,
+          phone: persistedShop.phone,
+          description: persistedShop.description,
+          manager_name: persistedShop.managerName,
+          status: persistedShop.status,
+          terminal_id: persistedShop.terminalId,
+          tax_rate_percent: persistedShop.taxRatePercent,
+          receipt_header_note: persistedShop.receiptHeaderNote,
+          receipt_footer_note: persistedShop.receiptFooterNote,
+          printer_settings_json: persistedShop.printerSettings
+            ? JSON.stringify(persistedShop.printerSettings)
+            : undefined,
+          created_at: persistedShop.createdAt,
+          updated_at: new Date().toISOString(),
+        }).catch((err) => {
+          console.error('Failed to save shop settings locally:', err);
+        });
+      }
+    }
+  };
+
+  const handleSavePrinterSettings = async (
+    shopId: string,
+    settings: ShopPrinterSettings
+  ): Promise<void> => {
+    const shop = shops.find((item) => item.id === shopId);
+
+    if (!shop) {
+      throw new Error('Shop not found. Please refresh and try again.');
+    }
+
+    const existingLocalShop = await dbAdapter.getShop(shopId);
+
+    if (
+      existingLocalShop &&
+      existingLocalShop.business_id !== shop.businessId
+    ) {
+      throw new Error('Local shop ownership verification failed.');
+    }
+
+    const now = new Date().toISOString();
+
+    await dbAdapter.saveShop({
+      ...(existingLocalShop || {}),
+      id: shop.id,
+      business_id: shop.businessId,
+      code: shop.code,
+      name: shop.name,
+      category: shop.category,
+      location_city: shop.locationCity,
+      address: shop.address,
+      phone: shop.phone,
+      description: shop.description,
+      manager_name: shop.managerName,
+      status: shop.status,
+      terminal_id: shop.terminalId,
+      tax_rate_percent: shop.taxRatePercent,
+      receipt_header_note: shop.receiptHeaderNote,
+      receipt_footer_note: shop.receiptFooterNote,
+      printer_settings_json: JSON.stringify(settings),
+      created_at: existingLocalShop?.created_at || shop.createdAt,
+      updated_at: now,
+    });
+
+    setShops((prev) =>
+      prev.map((item) =>
+        item.id === shopId
+          ? { ...item, printerSettings: settings }
+          : item
+      )
     );
   };
 
@@ -2578,7 +4371,10 @@ export default function App() {
 
     setDebtCustomers((prev) => {
       const targetCustomer = prev.find(
-        (c) => c.id === customerId && c.shopId === activeShop.id
+        (c) =>
+          c.id === customerId &&
+          c.shopId === activeShop.id &&
+          c.businessId === activeBusiness.id
       );
       if (!targetCustomer) return prev;
 
@@ -2716,6 +4512,9 @@ export default function App() {
       updatedAt: nowFormatted,
     };
     setSuppliers((prev) => [newSupplier, ...prev]);
+    if (dataMode !== 'demo' && liveDataService) {
+      void liveDataService.saveShopSupplier(activeBusiness.id, activeShop.id, newSupplier);
+    }
     return newSupplier;
   };
 
@@ -2727,7 +4526,10 @@ export default function App() {
   ) => {
     if (!activeShop) return;
     const targetSupplier = suppliers.find(
-      (s) => s.id === supplierId && s.shopId === activeShop.id
+      (s) =>
+        s.id === supplierId &&
+        s.businessId === activeBusiness.id &&
+        (s.shopId === activeShop.id || !s.shopId)
     );
     if (!targetSupplier) return;
 
@@ -2748,6 +4550,10 @@ export default function App() {
       prev.map((s) => (s.id === updatedSupplier.id ? updatedSupplier : s))
     );
     setSupplierSupplies((prev) => [supplyRecord, ...prev]);
+    if (dataMode !== 'demo' && liveDataService) {
+      void liveDataService.saveShopSupplier(activeBusiness.id, activeShop.id, updatedSupplier);
+      void liveDataService.saveShopSupplierSupply(activeBusiness.id, activeShop.id, supplyRecord);
+    }
 
     // 2. Synchronize shop products stockQuantity & costPrice and log restock adjustments
     const newAdjustments: StockAdjustment[] = [];
@@ -2793,7 +4599,21 @@ export default function App() {
       });
     });
 
+    const updatedProductsToPersist: Product[] = [];
+
     if (productUpdates.size > 0) {
+      activeShopProducts.forEach((p) => {
+        const upd = productUpdates.get(p.id);
+        if (upd) {
+          updatedProductsToPersist.push({
+            ...p,
+            stockQuantity: upd.nextStock,
+            costPrice: upd.nextCostPrice,
+            updatedAt: nowFormatted,
+          });
+        }
+      });
+
       setProducts((prev) =>
         prev.map((p) => {
           const upd = productUpdates.get(p.id);
@@ -2811,6 +4631,47 @@ export default function App() {
     if (newAdjustments.length > 0) {
       setStockAdjustments((prev) => [...newAdjustments, ...prev]);
     }
+
+    if (dataMode !== 'demo') {
+      for (const prod of updatedProductsToPersist) {
+        liveDataService
+          .persistLiveProduct(prod, {
+            operationType: 'update',
+            ...(isPlatformSupportMode && activeSupportSession
+              ? { supportSessionId: activeSupportSession.supportSessionId }
+              : {}),
+          })
+          .catch((err) => {
+            console.error('Failed to update product stock from supplier supply:', err);
+          });
+      }
+
+      for (const adj of newAdjustments) {
+        liveDataService
+          .persistInventoryMovement(
+            adj,
+            isPlatformSupportMode && activeSupportSession
+              ? activeSupportSession.supportSessionId
+              : undefined
+          )
+          .catch((err) => {
+            console.error('Failed to record stock movement from supplier supply:', err);
+          });
+      }
+
+      void cloudSyncService
+        .syncPendingOperations(currentUser, {
+          shopId: activeShop.id,
+          includeRequiresReview: true,
+        })
+        .then(async () => {
+          if (dbAdapter) {
+            const report = await auditLocalStorageAndIndexedDb(dbAdapter);
+            setStorageAudit(report);
+          }
+        })
+        .catch(() => {});
+    }
   };
 
   const handleRecordSupplierPayment = (supplierId: string, amount: number) => {
@@ -2818,11 +4679,190 @@ export default function App() {
     const nowFormatted = formatPosTimestamp();
     setSuppliers((prev) =>
       prev.map((s) => {
-        if (s.id !== supplierId || s.shopId !== activeShop.id) return s;
+        if (
+          s.id !== supplierId ||
+          s.shopId !== activeShop.id ||
+          s.businessId !== activeBusiness.id
+        ) {
+          return s;
+        }
         return applySupplierBalancePayment(s, amount, nowFormatted);
       })
     );
   };
+
+  const handleRetryPendingSync = useCallback(
+    async (syncId?: string) => {
+      if (
+        dataMode !== 'live' ||
+        !currentUser ||
+        currentUser.status !== 'active' ||
+        !activeBusiness ||
+        isKnownDemoRecord(activeBusiness)
+      ) {
+        return;
+      }
+
+      if (!dbAdapter) return;
+
+      try {
+        // 1. Ensure all active shop products in memory have their latest stock persisted to Cloud Firestore
+        if (activeShopProducts && activeShopProducts.length > 0) {
+          for (const prod of activeShopProducts) {
+            try {
+              await liveDataService.persistLiveProduct(prod, {
+                operationType: 'update',
+                ...(isPlatformSupportMode && activeSupportSession
+                  ? { supportSessionId: activeSupportSession.supportSessionId }
+                  : {}),
+              });
+            } catch (pErr) {
+              console.warn('Could not update live product stock before sync retry:', pErr);
+            }
+          }
+        }
+
+        // 2. Fetch actionable queue entries
+        const allQueue = dbAdapter.getAllSyncQueue
+          ? await dbAdapter.getAllSyncQueue(activeShop?.id, activeBusiness.id)
+          : await dbAdapter.getPendingSyncQueue(activeShop?.id);
+
+        const candidates = allQueue.filter((e) => {
+          if (syncId && e.id !== syncId) return false;
+          if (e.status === 'synced' || e.status === ('quarantined' as any)) return false;
+          if (
+            SPECIFIED_PRE_FIREBASE_SYNC_ID_SET.has(e.id) ||
+            SPECIFIED_PRE_FIREBASE_SALE_ID_SET.has(e.entity_id) ||
+            isPreFirebaseTestRecord(e) ||
+            isKnownDemoRecord(e)
+          ) {
+            return false;
+          }
+          return true;
+        });
+
+        for (const entry of candidates) {
+          if (entry.entity_type === 'sale') {
+            const localSale = await dbAdapter.getSale(entry.entity_id);
+            if (!localSale) continue;
+            const localItems = await dbAdapter.getSaleItems(localSale.id);
+
+            const saleTx: SaleTransaction = {
+              id: localSale.id,
+              shopId: localSale.shop_id,
+              businessId: localSale.business_id,
+              receiptNumber: localSale.receipt_number,
+              terminalId: localSale.terminal_id,
+              cashierUserId: localSale.cashier_user_id,
+              cashierName: localSale.cashier_name,
+              createdAt: localSale.created_at,
+              items: localItems.map((item) => ({
+                id: item.id,
+                productId: item.product_id,
+                sku: item.sku,
+                barcode: item.barcode,
+                productName: item.product_name,
+                unit: item.unit,
+                unitPrice: fromMinorUnits(item.unit_price_kobo),
+                costPrice: fromMinorUnits(item.cost_price_kobo),
+                quantity: item.quantity,
+                lineTotal: fromMinorUnits(item.line_total_kobo),
+              })),
+              subtotal: fromMinorUnits(localSale.subtotal_kobo),
+              discountAmount: fromMinorUnits(localSale.discount_amount_kobo),
+              taxRatePercent: localSale.tax_rate_percent,
+              taxAmount: fromMinorUnits(localSale.tax_amount_kobo),
+              totalAmount: fromMinorUnits(localSale.total_amount_kobo),
+              amountTendered: fromMinorUnits(localSale.amount_tendered_kobo),
+              changeDue: fromMinorUnits(localSale.change_due_kobo),
+              paymentMethod: (localSale.payment_method as SaleTransaction['paymentMethod']) || 'cash',
+              paymentReference: localSale.payment_reference,
+              creditCustomerId: localSale.credit_customer_id,
+              creditCustomerName: localSale.credit_customer_name,
+              creditCustomerPhone: localSale.credit_customer_phone,
+              status: 'completed',
+              syncStatus: 'pending_local_queue',
+              notes: localSale.notes,
+            };
+
+            const baseIdem = entry.idempotency_key || `chk-${localSale.shop_id}-${localSale.id}`;
+            const retryIdempotencyKey =
+              entry.status === 'requires_review'
+                ? `${baseIdem}-retry-${Date.now()}`
+                : baseIdem;
+
+            const ackResult = await liveDataService.persistLiveSale(
+              saleTx,
+              [],
+              {
+                operationId: entry.id,
+                idempotencyKey: retryIdempotencyKey,
+                actorUserId: isPlatformSupportMode ? saleTx.cashierUserId : currentUser.id,
+                ...(isPlatformSupportMode && activeSupportSession
+                  ? { supportSessionId: activeSupportSession.supportSessionId }
+                  : {}),
+              }
+            );
+
+            if (ackResult.outcome === 'acknowledged' && ackResult.ackId) {
+              await dbAdapter.updateSyncStatus(entry.id, 'synced', undefined, {
+                cloudAckId: ackResult.ackId,
+                acknowledgedAt: ackResult.syncedAt || new Date().toISOString(),
+              });
+
+              await dbAdapter.saveSale(
+                {
+                  ...localSale,
+                  is_synced: 1,
+                  sync_conflict_reason: undefined,
+                  synced_at: ackResult.syncedAt || new Date().toISOString(),
+                  sync_ack_id: ackResult.ackId,
+                },
+                localItems
+              );
+
+              setSales((prev) =>
+                prev.map((s) =>
+                  s.id === localSale.id
+                    ? { ...s, status: 'completed', syncStatus: 'synced' }
+                    : s
+                )
+              );
+
+              setShops((prev) =>
+                prev.map((s) =>
+                  s.id === localSale.shop_id
+                    ? {
+                        ...s,
+                        pendingSyncCount: Math.max(0, s.pendingSyncCount - 1),
+                        lastSyncedAt: 'Just now (Cloud Verified)',
+                      }
+                    : s
+                )
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Live sync retry encountered error:', err);
+      } finally {
+        const report = await auditLocalStorageAndIndexedDb(dbAdapter);
+        setStorageAudit(report);
+      }
+    },
+    [
+      dataMode,
+      currentUser,
+      activeBusiness,
+      activeShop?.id,
+      activeShopProducts,
+      dbAdapter,
+      liveDataService,
+      isPlatformSupportMode,
+      activeSupportSession,
+    ]
+  );
+  handleRetryPendingSyncRef.current = handleRetryPendingSync;
 
   const environmentBannerNode = (
     <DataEnvironmentBanner
@@ -2838,6 +4878,7 @@ export default function App() {
       onRefreshLive={
         dataMode !== 'demo' ? handleRefreshLiveWorkspace : undefined
       }
+      onRetryPendingSync={handleRetryPendingSync}
       onSwitchToLiveLogin={handleSignOut}
       onConfirmClearDemoData={handleConfirmClearDemoData}
       onPurgeQuarantinedRecords={
@@ -2921,9 +4962,9 @@ export default function App() {
   // STAGE 2: PLATFORM ADMINISTRATOR CONSOLE
   // =========================================================================
   if (
-    sessionStage === 'platform_admin' ||
-    currentUser.role === 'platform_admin'
-  ) {
+  currentUser.role === 'platform_admin' &&
+  !isPlatformSupportMode
+) {
     return (
       <div className="min-h-screen flex flex-col">
         {environmentBannerNode}
@@ -2936,13 +4977,17 @@ export default function App() {
             products={products}
             sales={sales}
             customRoles={customRoles}
-            dataMode={dataMode}
+                        dataMode={dataMode}
             firestoreDatabaseId={firebaseConfig.firestoreDatabaseId}
+            activeSupportSession={activeSupportSession}
+            onStartSupportSession={handleStartSupportSession}
+            onEndSupportSession={handleEndSupportSession}
             connectivity={connectivitySnapshot}
-            onChangeConnectivityState={setConnectivityState}
+            onChangeConnectivityState={handleConnectivityStateChange}
             onCreateBusiness={handleCreateBusiness}
             onUpdateBusiness={handleUpdateBusiness}
             onToggleBusinessStatus={handleToggleBusinessStatus}
+            onResetUserPassword={handleResetUserPassword}
             onRepairBusinessOwnerAuth={
               dataMode !== 'demo' ? handleRepairBusinessOwnerAuth : undefined
             }
@@ -2954,6 +4999,7 @@ export default function App() {
                 await liveDataService.adjustInventoryAsAdmin({
                   ...params,
                   adminUser: currentUser,
+                  supportSessionId: activeSupportSession?.supportSessionId || '',
                 });
               }
               setProducts((prev) =>
@@ -3022,8 +5068,71 @@ export default function App() {
                 )
               );
             }}
+            onCreateUser={async (params) => {
+              let explicitUserId: string | undefined;
+              if (dataMode !== 'demo' && params.password?.trim()) {
+                try {
+                  const provisioned = await provisionStaffAccount({
+                    email: params.email,
+                    password: params.password.trim(),
+                    fullName: params.fullName,
+                  });
+                  explicitUserId = provisioned.uid;
+                } catch (err: any) {
+                  setLiveErrorMessage(
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to provision staff authentication credentials.'
+                  );
+                  throw err;
+                }
+              }
+
+              let createdUser: User;
+              if (dataMode !== 'demo' && liveDataService) {
+                createdUser = await liveDataService.createUserAsAdmin({
+                  ...params,
+                  explicitUserId,
+                  adminUser: currentUser,
+                });
+              } else {
+                const newUserId = explicitUserId || generateUniqueUserId(users);
+                createdUser = {
+                  id: newUserId,
+                  businessId: params.businessId,
+                  username: params.email.trim().toLowerCase().split('@')[0],
+                  email: params.email.trim().toLowerCase(),
+                  fullName: params.fullName.trim(),
+                  role: params.role,
+                  roleLabel:
+                    params.roleLabel ||
+                    (params.role === 'shop_manager' ? 'Shop Manager' : 'Cashier'),
+                  assignedShopIds: params.assignedShopIds,
+                  permissions: params.permissions,
+                  status: 'active',
+                  createdAt: getTodayYmd(),
+                  lastLoginAt: 'Never (Newly Created)',
+                };
+              }
+              setUsers((prev) => [...prev, createdUser]);
+
+              const todayDate = getTodayYmd();
+              const newAssignments: ShopAssignment[] = params.assignedShopIds.map(
+                (shopId: string, idx: number) => ({
+                  id: `asgn-${Date.now()}-${idx}`,
+                  userId: createdUser.id,
+                  businessId: params.businessId,
+                  shopId,
+                  assignedAt: todayDate,
+                  assignedByUserId: currentUser.id,
+                  isActive: true,
+                })
+              );
+              setShopAssignments((prev) => [...prev, ...newAssignments]);
+              return createdUser;
+            }}
             onCreateShop={handleCreateShop}
-            onUpdateShop={handleUpdateShopSettings}
+            onUpdateShop={handleUpdateShop}
             onSwitchDemoUser={handleSwitchDemoUserAnywhere}
             onSignOut={handleSignOut}
             onCreateCustomRole={handleCreateCustomRole}
@@ -3061,7 +5170,7 @@ export default function App() {
             }}
             onSignOut={handleSignOut}
             connectivity={connectivitySnapshot}
-            onChangeConnectivityState={setConnectivityState}
+            onChangeConnectivityState={handleConnectivityStateChange}
             onSwitchDemoUser={handleSwitchDemoUserAnywhere}
             onResetUserPassword={handleResetUserPassword}
             allDemoUsers={visibleUsersForActor}
@@ -3077,6 +5186,26 @@ export default function App() {
   return (
     <div className="min-h-screen h-screen h-[100dvh] bg-slate-100 flex flex-col overflow-hidden">
       {environmentBannerNode}
+      {isPlatformSupportMode && activeSupportSession && (
+        <div className="bg-amber-400 border-b border-amber-500 text-slate-950 px-4 py-2 flex items-center justify-between text-xs font-semibold shrink-0 shadow-sm z-30">
+          <div className="flex items-center gap-2 truncate">
+            <span className="px-1.5 py-0.5 rounded bg-slate-950 text-amber-300 font-mono text-[10px] uppercase tracking-wider font-bold">
+              Support Mode Active
+            </span>
+            <span className="truncate">
+              Platform Admin inspecting <strong>{activeBusiness.name}</strong> — <strong>{activeShop?.name} ({activeShop?.code})</strong>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleEndSupportSession}
+            className="px-3 py-1 rounded bg-slate-950 hover:bg-slate-900 text-white font-bold transition flex items-center gap-1.5 shrink-0 shadow-sm cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Exit Shop &amp; Return to Console</span>
+          </button>
+        </div>
+      )}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <Sidebar
           activeView={safeActiveView}
@@ -3085,10 +5214,17 @@ export default function App() {
           onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
           activeShop={activeShop}
           currentUser={currentUser}
-          onReturnToShopSelection={() => setSessionStage('shop_selection')}
+          onReturnToShopSelection={() => {
+            if (isPlatformSupportMode) {
+              handleEndSupportSession();
+            } else {
+              setSessionStage('shop_selection');
+            }
+          }}
           onSignOut={handleSignOut}
           mobileOpen={mobileSidebarOpen}
           onCloseMobile={() => setMobileSidebarOpen(false)}
+          supportMode={isPlatformSupportMode}
         />
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -3098,13 +5234,21 @@ export default function App() {
             activeShop={activeShop}
             authorizedShops={authorizedShops}
             onSwitchShop={handleSwitchShopInWorkspace}
-            onOpenShopDirectory={() => setSessionStage('shop_selection')}
+            isSwitchingShop={isSwitchingSupportShop}
+            onOpenShopDirectory={() => {
+              if (isPlatformSupportMode) {
+                handleEndSupportSession();
+              } else {
+                setSessionStage('shop_selection');
+              }
+            }}
             currentUser={currentUser}
             allUsers={visibleUsersForActor}
             onSwitchDemoUser={handleSwitchDemoUserAnywhere}
             connectivity={connectivitySnapshot}
-            onChangeConnectivityState={setConnectivityState}
+            onChangeConnectivityState={handleConnectivityStateChange}
             onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
+            onTriggerSync={syncPendingSalesWithCloud}
           />
 
           <main className="flex-1 overflow-y-auto">
@@ -3168,6 +5312,37 @@ export default function App() {
               />
             )}
 
+            {safeActiveView === 'product_transfer' && (
+              <ProductTransferPage
+                key={`transfers-${activeShop.id}`}
+                currentUser={currentUser}
+                activeShop={activeShop}
+                allShops={shops}
+                products={products}
+                transfers={transfers}
+                categories={activeShopCategories}
+                dataMode={dataMode}
+                onInitiateTransfer={handleInitiateTransfer}
+                onConfirmTransfer={handleConfirmTransfer}
+                onRejectTransfer={handleRejectTransfer}
+                onCancelTransfer={handleCancelTransfer}
+              />
+            )}
+
+            {safeActiveView === 'expiring_products' && (
+              <ExpiringProductsPage
+                key={`expiring-${activeShop.id}`}
+                currentUser={currentUser}
+                activeShop={activeShop}
+                business={activeBusiness}
+                products={activeShopProducts}
+                categories={activeShopCategories}
+                onSaveProduct={handleSaveProduct}
+                onRecordStockAdjustment={handleRecordStockAdjustment}
+                onNavigateToInventory={() => setActiveView('inventory')}
+              />
+            )}
+
             {safeActiveView === 'invoices' && (
               <InvoicesPage
                 key={activeShop.id}
@@ -3203,6 +5378,7 @@ export default function App() {
                 business={activeBusiness}
                 shop={activeShop}
                 shopSales={activeShopSales}
+                products={activeShopProducts}
                 businessUsers={businessUsers}
                 shopDebtCustomers={activeShopDebtCustomers}
                 currentUser={currentUser}
@@ -3291,8 +5467,9 @@ export default function App() {
                 allUsers={businessUsers}
                 currentUser={currentUser}
                 connectivity={connectivitySnapshot}
-                onChangeConnectivityState={setConnectivityState}
+                onChangeConnectivityState={handleConnectivityStateChange}
                 onUpdateShopSettings={handleUpdateShopSettings}
+				onSavePrinterSettings={handleSavePrinterSettings}
                 onUpdateBusinessCurrency={handleUpdateBusinessCurrency}
                 onUpdateUserPermissions={handleUpdateUserPermissions}
                 onResetUserPassword={handleResetUserPassword}

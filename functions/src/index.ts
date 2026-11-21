@@ -21,6 +21,8 @@ import {
   executeSyncPosOperation,
   executeInviteAuthorizedStaff,
   executeSetTenantStatus,
+  executeResetUserPassword,
+  ResetUserPasswordRequest,
   ProvisionBusinessRequest,
   ProvisionBusinessResponse,
   RepairBusinessOwnerAuthRequest,
@@ -29,6 +31,12 @@ import {
   SyncOperationResponse,
   InviteAuthorizedStaffRequest,
   SetTenantStatusRequest,
+  executeStartPlatformAdminSupportSession,
+  executeEndPlatformAdminSupportSession,
+  executeGetPlatformAdminSupportSession,
+  StartPlatformAdminSupportSessionRequest,
+  EndPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse,
   EXPECTED_FIREBASE_PROJECT_ID,
   STAGING_FIREBASE_PROJECT_ID,
   STAGING_FUNCTIONS_REGION,
@@ -127,6 +135,55 @@ export const setTenantStatus = wrapCallable<
   RESOLVED_DEPLOYMENT_REGION
 );
 
+export const startPlatformAdminSupportSession = wrapCallable<
+  StartPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse
+>(
+  (drivers, auth, data) =>
+    executeStartPlatformAdminSupportSession(
+      drivers.dbDriver,
+      auth,
+      data
+    ),
+  RESOLVED_DEPLOYMENT_REGION
+);
+
+export const endPlatformAdminSupportSession = wrapCallable<
+  EndPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse
+>(
+  (drivers, auth, data) =>
+    executeEndPlatformAdminSupportSession(
+      drivers.dbDriver,
+      auth,
+      data
+    ),
+  RESOLVED_DEPLOYMENT_REGION
+);
+
+export const getPlatformAdminSupportSession = wrapCallable<
+  Record<string, never>,
+  PlatformAdminSupportSessionResponse | null
+>(
+  (drivers, auth) =>
+    executeGetPlatformAdminSupportSession(drivers.dbDriver, auth),
+  RESOLVED_DEPLOYMENT_REGION
+);
+
+export const resetUserPassword = wrapCallable<
+  ResetUserPasswordRequest,
+  { success: boolean; message: string; targetUserId: string }
+>(
+  (drivers, auth, data) =>
+    executeResetUserPassword(
+      drivers.dbDriver,
+      drivers.authDirectory,
+      auth,
+      data
+    ),
+  RESOLVED_DEPLOYMENT_REGION
+);
+
 export const CLOUD_FUNCTIONS_MANIFEST = {
   runtime: 'nodejs22',
   region: RESOLVED_DEPLOYMENT_REGION,
@@ -143,5 +200,9 @@ export const CLOUD_FUNCTIONS_MANIFEST = {
     'syncShopOperation',
     'inviteAuthorizedStaff',
     'setTenantStatus',
+    'resetUserPassword',
+    'startPlatformAdminSupportSession',
+    'endPlatformAdminSupportSession',
+    'getPlatformAdminSupportSession',
   ],
 } as const;

@@ -31,6 +31,7 @@ import {
   callInviteAuthorizedStaff,
   callProvisionBusinessAndPrimaryOwner,
   callRepairBusinessOwnerAuth,
+  callResetUserPassword,
   callSetTenantStatus,
   callSyncPosOperation,
   db,
@@ -41,6 +42,8 @@ import {
   ProvisionBusinessResponse,
   RepairBusinessOwnerAuthRequest,
   RepairBusinessOwnerAuthResponse,
+  ResetUserPasswordRequest,
+  ResetUserPasswordResponse,
   sendEmailVerification,
   sendPasswordResetEmail,
   SetTenantStatusRequest,
@@ -78,6 +81,8 @@ import {
   PlatformAdminAuditLog,
   Product,
   ProductCategory,
+  ProductTransfer,
+  SaleLineItem,
   SaleTransaction,
   Shop,
   ShopAssignment,
@@ -85,6 +90,7 @@ import {
   StockAdjustmentType,
   Supplier,
   SupplierSupplyRecord,
+  TransactionStatus,
   UnitOfMeasurement,
   User,
   UserRole,
@@ -99,6 +105,7 @@ import {
   isSyntheticClientUserId,
   isSyntheticOwnerUserId,
   OWNER_ONLY_STAFF_PERMISSIONS,
+  ReceiptReturnItemSummary,
   resolveBusinessOwnerAuthState,
   ROLE_DEFAULT_PERMISSIONS,
 } from '../utils/posCalculations';
@@ -1177,7 +1184,11 @@ export function clearDemoDataSafely(): {
 
     for (let i = 0; i < window.localStorage.length; i++) {
       const k = window.localStorage.key(i);
-      if (k && k.startsWith(LIVE_USER_CACHE_PREFIX)) {
+      if (
+        k &&
+        (k.startsWith(LIVE_USER_CACHE_PREFIX) ||
+          k.startsWith(LIVE_BUSINESS_CACHE_PREFIX))
+      ) {
         preservedLiveCacheKeys.push(k);
       }
     }
@@ -1186,6 +1197,160 @@ export function clearDemoDataSafely(): {
   }
 
   return { clearedDemoKeys, preservedLiveCacheKeys };
+}
+
+export const LIVE_BUSINESS_CACHE_PREFIX = 'smartmind_live_business_cache_';
+
+export function getLiveBusinessCacheKey(businessId: string): string {
+  return `${LIVE_BUSINESS_CACHE_PREFIX}${businessId}`;
+}
+
+export function saveBusinessScopedLiveCache(
+  businessId: string,
+  dataset: LiveWorkspaceDataset
+): void {
+  if (typeof window === 'undefined' || !businessId) return;
+  try {
+    const existing = loadBusinessScopedLiveCache(businessId);
+    const mergeEntities = <T extends { id: string }>(
+      current: T[] = [],
+      incoming: T[] = []
+    ): T[] => {
+      const map = new Map<string, T>();
+      current.forEach((item) => map.set(item.id, item));
+      incoming.forEach((item) => map.set(item.id, item));
+      return Array.from(map.values());
+    };
+
+    const sanitizedUsers = (dataset.users || []).map((u) => {
+      const copy = { ...u };
+      delete copy.password;
+      return copy;
+    });
+
+    const payload: LiveWorkspaceDataset = {
+      ...dataset,
+      users: mergeEntities(existing?.users, sanitizedUsers),
+      businessId,
+      cachedAt: new Date().toISOString(),
+      debtCustomers: mergeEntities(
+        existing?.debtCustomers,
+        dataset.debtCustomers
+      ),
+      debtTransactions: mergeEntities(
+        existing?.debtTransactions,
+        dataset.debtTransactions
+      ),
+      suppliers: mergeEntities(existing?.suppliers, dataset.suppliers),
+      supplierSupplies: mergeEntities(
+        existing?.supplierSupplies,
+        dataset.supplierSupplies
+      ),
+      invoices: mergeEntities(existing?.invoices, dataset.invoices),
+      stockAdjustments: mergeEntities(
+        existing?.stockAdjustments,
+        dataset.stockAdjustments
+      ),
+      customRoles: mergeEntities(existing?.customRoles, dataset.customRoles),
+    };
+
+    window.localStorage.setItem(
+      getLiveBusinessCacheKey(businessId),
+      JSON.stringify(payload)
+    );
+  } catch {
+    // Ignore quota errors
+  }
+}
+
+export function loadBusinessScopedLiveCache(
+  businessId: string
+): LiveWorkspaceDataset | null {
+  if (typeof window === 'undefined' || !businessId) return null;
+  try {
+    let result: LiveWorkspaceDataset | null = null;
+    const raw = window.localStorage.getItem(getLiveBusinessCacheKey(businessId));
+    if (raw) {
+      const parsed = JSON.parse(raw) as LiveWorkspaceDataset;
+      if (parsed.businessId === businessId) {
+        result = parsed;
+      }
+    }
+
+    const mergeEntities = <T extends { id: string }>(
+      current: T[] = [],
+      incoming: T[] = []
+    ): T[] => {
+      const map = new Map<string, T>();
+      current.forEach((item) => map.set(item.id, item));
+      incoming.forEach((item) => map.set(item.id, item));
+      return Array.from(map.values());
+    };
+
+    // Scan all user caches to aggregate records created under any user belonging to this business
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(LIVE_USER_CACHE_PREFIX)) {
+        try {
+          const itemRaw = window.localStorage.getItem(k);
+          if (!itemRaw) continue;
+          const parsedItem = JSON.parse(itemRaw) as LiveWorkspaceDataset;
+          if (parsedItem.businessId === businessId) {
+            if (!result) {
+              result = { ...parsedItem };
+            } else {
+              result.debtCustomers = mergeEntities(
+                result.debtCustomers,
+                parsedItem.debtCustomers
+              );
+              result.debtTransactions = mergeEntities(
+                result.debtTransactions,
+                parsedItem.debtTransactions
+              );
+              result.suppliers = mergeEntities(
+                result.suppliers,
+                parsedItem.suppliers
+              );
+              result.supplierSupplies = mergeEntities(
+                result.supplierSupplies,
+                parsedItem.supplierSupplies
+              );
+              result.invoices = mergeEntities(
+                result.invoices,
+                parsedItem.invoices
+              );
+              result.stockAdjustments = mergeEntities(
+                result.stockAdjustments,
+                parsedItem.stockAdjustments
+              );
+              result.customRoles = mergeEntities(
+                result.customRoles,
+                parsedItem.customRoles
+              );
+              result.users = mergeEntities(
+                result.users,
+                parsedItem.users
+              );
+            }
+          }
+        } catch {
+          // Ignore parse errors on corrupted keys
+        }
+      }
+    }
+
+    if (!result) return null;
+
+    return {
+      ...result,
+      businesses: (result.businesses || []).filter((b) => !isKnownDemoRecord(b)),
+      shops: (result.shops || []).filter((s) => !isKnownDemoRecord(s)),
+      products: (result.products || []).filter((p) => !isKnownDemoRecord(p)),
+      sales: (result.sales || []).filter((s) => !isKnownDemoRecord(s)),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function getLiveUserCacheKey(userId: string): string {
@@ -1213,6 +1378,9 @@ export function saveUserScopedLiveCache(
       getLiveUserCacheKey(userId),
       JSON.stringify(payload)
     );
+    if (dataset.businessId) {
+      saveBusinessScopedLiveCache(dataset.businessId, dataset);
+    }
   } catch {
     // Ignore quota errors
   }
@@ -1275,6 +1443,9 @@ export interface LiveCloudStoreProvider {
   setTenantStatus?(
     request: SetTenantStatusRequest
   ): Promise<SetTenantStatusResponse>;
+  resetUserPassword?(
+    request: ResetUserPasswordRequest
+  ): Promise<ResetUserPasswordResponse>;
   sendPasswordResetEmail?(email: string): Promise<void>;
   sendEmailVerificationToCurrentUser?(): Promise<void>;
   reloadAndGetCurrentAuthState?(expectedUid?: string): Promise<{
@@ -1288,6 +1459,29 @@ export interface LiveCloudStoreProvider {
   listAllSalesGlobal?(criteria?: { businessId?: string; shopId?: string }): Promise<SaleTransaction[]>;
   recordPlatformAuditLog?(log: PlatformAdminAuditLog): Promise<void>;
   listPlatformAuditLogs?(filters?: { businessId?: string; action?: string; limit?: number }): Promise<PlatformAdminAuditLog[]>;
+  listBusinessTransfers?(businessId: string): Promise<ProductTransfer[]>;
+  saveTransfer?(transfer: ProductTransfer): Promise<void>;
+}
+
+export function sanitizeFirestorePayload<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeFirestorePayload(item)) as unknown as T;
+  }
+  if (typeof obj === 'object') {
+    const result: Record<string, any> = {};
+    for (const [key, val] of Object.entries(obj)) {
+      if (val !== undefined) {
+        result[key] = sanitizeFirestorePayload(val);
+      }
+    }
+    return result as T;
+  }
+  return obj;
 }
 
 export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
@@ -1439,10 +1633,19 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       locationCity: d.locationCity || 'Lagos',
       address: d.address,
       phone: d.phone,
+      description: d.description || undefined,
       managerName: d.managerName || 'Shop Manager',
       status: d.status || 'active',
       terminalId: d.terminalId || `TERM-${d.code || docId}`,
       taxRatePercent: typeof d.taxRatePercent === 'number' ? d.taxRatePercent : 7.5,
+      vatEnabled:
+        typeof d.vatEnabled === 'boolean'
+          ? d.vatEnabled
+          : typeof d.taxRatePercent === 'number'
+            ? d.taxRatePercent > 0
+            : false,
+      printVatOnReceipt:
+        typeof d.printVatOnReceipt === 'boolean' ? d.printVatOnReceipt : false,
       receiptHeaderNote: d.receiptHeaderNote || `${d.name} — Official Receipt`,
       receiptFooterNote: d.receiptFooterNote || 'Thank you for your patronage',
       createdAt: d.createdAt || new Date().toISOString(),
@@ -1467,11 +1670,40 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
         barcode: d.barcode || d.sku,
         name: d.name,
         unit: d.unit || 'Unit',
-        costPrice: fromMinorUnits(Number(d.costPriceKobo || 0)),
-        sellingPrice: fromMinorUnits(Number(d.sellingPriceKobo || 0)),
+        costPrice:
+          typeof d.costPrice === 'number' && d.costPrice > 0
+            ? d.costPrice
+            : typeof d.costPriceKobo === 'number' && d.costPriceKobo > 0
+            ? fromMinorUnits(d.costPriceKobo)
+            : typeof d.cost_price === 'number' && d.cost_price > 0
+            ? d.cost_price
+            : typeof d.cost_price_kobo === 'number' && d.cost_price_kobo > 0
+            ? fromMinorUnits(d.cost_price_kobo)
+            : typeof d.costPrice === 'number'
+            ? d.costPrice
+            : typeof d.costPriceKobo === 'number'
+            ? fromMinorUnits(d.costPriceKobo)
+            : 0,
+        sellingPrice:
+          typeof d.sellingPrice === 'number' && d.sellingPrice > 0
+            ? d.sellingPrice
+            : typeof d.sellingPriceKobo === 'number' && d.sellingPriceKobo > 0
+            ? fromMinorUnits(d.sellingPriceKobo)
+            : typeof d.selling_price === 'number' && d.selling_price > 0
+            ? d.selling_price
+            : typeof d.selling_price_kobo === 'number' && d.selling_price_kobo > 0
+            ? fromMinorUnits(d.selling_price_kobo)
+            : typeof d.sellingPrice === 'number'
+            ? d.sellingPrice
+            : typeof d.sellingPriceKobo === 'number'
+            ? fromMinorUnits(d.sellingPriceKobo)
+            : 0,
         stockQuantity: Number(d.stockQuantity || 0),
         reorderLevel: Number(d.reorderLevel || 0),
+        hasExpiry: Boolean(d.hasExpiry),
+        expiryDate: d.expiryDate || null,
         isActive: d.isActive !== false,
+        createdAt: d.createdAt || d.updatedAt || new Date().toISOString(),
         updatedAt: d.updatedAt || new Date().toISOString(),
       };
     });
@@ -1484,31 +1716,98 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
     const snap = await getDocs(
       collection(db, 'businesses', businessId, 'shops', shopId, 'sales')
     );
-    return snap.docs.map((docSnap) => {
-      const d = docSnap.data();
-      return {
-        id: d.id || docSnap.id,
-        shopId: d.shopId || shopId,
-        businessId: d.businessId || businessId,
-        receiptNumber: d.receiptNumber,
-        terminalId: d.terminalId || 'TERM-01',
-        cashierUserId: d.cashierUserId,
-        cashierName: d.cashierName,
-        createdAt: d.createdAt,
-        items: [],
-        subtotal: fromMinorUnits(Number(d.subtotalKobo || 0)),
-        discountAmount: fromMinorUnits(Number(d.discountAmountKobo || 0)),
-        taxRatePercent: Number(d.taxRatePercent || 0),
-        taxAmount: fromMinorUnits(Number(d.taxAmountKobo || 0)),
-        totalAmount: fromMinorUnits(Number(d.totalAmountKobo || 0)),
-        amountTendered: fromMinorUnits(Number(d.amountTenderedKobo || 0)),
-        changeDue: fromMinorUnits(Number(d.changeDueKobo || 0)),
-        paymentMethod: d.paymentMethod || 'cash',
-        status: 'completed',
-        syncStatus: 'synced_demo',
-        notes: 'Cloud Confirmed Sale',
-      };
-    });
+    const sales = await Promise.all(
+      snap.docs.map(async (docSnap) => {
+        const d = docSnap.data();
+        let items: SaleLineItem[] = [];
+
+        if (Array.isArray(d.items) && d.items.length > 0) {
+          items = d.items.map((it: any) => ({
+            id: it.id || it.productId || it.product_id,
+            productId: it.productId || it.product_id,
+            sku: it.sku || '',
+            barcode: it.barcode || it.sku || '',
+            productName: it.productName || it.product_name || 'Item',
+            unit: it.unit || 'Unit',
+            unitPrice:
+              typeof it.unitPrice === 'number'
+                ? it.unitPrice
+                : fromMinorUnits(Number(it.unitPriceKobo || it.unit_price_kobo || 0)),
+            costPrice:
+              typeof it.costPrice === 'number'
+                ? it.costPrice
+                : fromMinorUnits(Number(it.costPriceKobo || it.cost_price_kobo || 0)),
+            quantity: Number(it.quantity || 1),
+            lineTotal:
+              typeof it.lineTotal === 'number'
+                ? it.lineTotal
+                : fromMinorUnits(Number(it.lineTotalKobo || it.line_total_kobo || 0)),
+          }));
+        } else {
+          try {
+            const itemsSnap = await getDocs(
+              collection(db, 'businesses', businessId, 'shops', shopId, 'sales', docSnap.id, 'items')
+            );
+            if (!itemsSnap.empty) {
+              items = itemsSnap.docs.map((iDoc) => {
+                const idata = iDoc.data();
+                return {
+                  id: idata.id || iDoc.id,
+                  productId: idata.productId || idata.product_id,
+                  sku: idata.sku || '',
+                  barcode: idata.barcode || idata.sku || '',
+                  productName: idata.productName || idata.product_name || 'Item',
+                  unit: idata.unit || 'Unit',
+                  unitPrice:
+                    typeof idata.unitPrice === 'number'
+                      ? idata.unitPrice
+                      : fromMinorUnits(Number(idata.unitPriceKobo || idata.unit_price_kobo || 0)),
+                  costPrice:
+                    typeof idata.costPrice === 'number'
+                      ? idata.costPrice
+                      : fromMinorUnits(Number(idata.costPriceKobo || idata.cost_price_kobo || 0)),
+                  quantity: Number(idata.quantity || 1),
+                  lineTotal:
+                    typeof idata.lineTotal === 'number'
+                      ? idata.lineTotal
+                      : fromMinorUnits(Number(idata.lineTotalKobo || idata.line_total_kobo || 0)),
+                };
+              });
+            }
+          } catch (err) {
+            console.warn(`Could not load line items for sale ${docSnap.id}:`, err);
+          }
+        }
+
+        return {
+          id: d.id || docSnap.id,
+          shopId: d.shopId || shopId,
+          businessId: d.businessId || businessId,
+          receiptNumber: d.receiptNumber,
+          terminalId: d.terminalId || 'TERM-01',
+          cashierUserId: d.cashierUserId,
+          cashierName: d.cashierName,
+          createdAt: d.createdAt,
+          items,
+          subtotal: fromMinorUnits(Number(d.subtotalKobo || 0)),
+          discountAmount: fromMinorUnits(Number(d.discountAmountKobo || 0)),
+          taxRatePercent: Number(d.taxRatePercent || 0),
+          taxAmount: fromMinorUnits(Number(d.taxAmountKobo || 0)),
+          totalAmount: fromMinorUnits(Number(d.totalAmountKobo || 0)),
+          amountTendered: fromMinorUnits(Number(d.amountTenderedKobo || 0)),
+          changeDue: fromMinorUnits(Number(d.changeDueKobo || 0)),
+          paymentMethod: d.paymentMethod || 'cash',
+          paymentReference: d.paymentReference,
+          creditCustomerId: d.creditCustomerId,
+          creditCustomerName: d.creditCustomerName,
+          creditCustomerPhone: d.creditCustomerPhone,
+          status: (d.status as TransactionStatus) || 'completed',
+          syncStatus: (d.syncStatus as SaleTransaction['syncStatus']) || 'synced',
+          notes: d.notes || 'Cloud Confirmed Sale',
+        };
+      })
+    );
+    return sales;
   }
 
   async listAllShopsGlobal(): Promise<Shop[]> {
@@ -1526,57 +1825,79 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
   }
 
   async listAllProductsGlobal(businessId?: string): Promise<Product[]> {
-    const businesses = businessId
+    const rawBusinesses = businessId
       ? [{ id: businessId } as Business]
       : await this.listAllBusinesses();
-    const allProducts: Product[] = [];
-    for (const b of businesses) {
-      try {
-        const shops = await this.listBusinessShops(b.id);
-        for (const s of shops) {
-          try {
-            const products = await this.listShopProducts(b.id, s.id);
-            allProducts.push(...products);
-          } catch {
-            // continue
-          }
+    const businesses = rawBusinesses.filter(
+      (b) => !isKnownDemoRecord(b) && !isPlatformAdminBusinessSentinel(b.id)
+    );
+    const shopLists = await Promise.all(
+      businesses.map(async (b) => {
+        try {
+          const shops = await this.listBusinessShops(b.id);
+          return shops.filter((s) => !isKnownDemoRecord(s));
+        } catch {
+          return [];
         }
-      } catch {
-        // continue
-      }
-    }
-    return allProducts;
+      })
+    );
+    const allShops = shopLists.flat();
+    const productLists = await Promise.all(
+      allShops.map(async (s) => {
+        try {
+          const prods = await this.listShopProducts(s.businessId, s.id);
+          return prods.filter((p) => !isKnownDemoRecord(p));
+        } catch {
+          return [];
+        }
+      })
+    );
+    return productLists.flat();
   }
 
   async listAllSalesGlobal(criteria?: {
     businessId?: string;
     shopId?: string;
   }): Promise<SaleTransaction[]> {
-    const allSales: SaleTransaction[] = [];
     if (criteria?.businessId && criteria?.shopId) {
-      return this.listShopSales(criteria.businessId, criteria.shopId);
+      const sales = await this.listShopSales(criteria.businessId, criteria.shopId);
+      return sales.filter((s) => !isKnownDemoRecord(s));
     }
-    const businesses = criteria?.businessId
+    const rawBusinesses = criteria?.businessId
       ? [{ id: criteria.businessId } as Business]
       : await this.listAllBusinesses();
-    for (const b of businesses) {
-      try {
-        const shops = criteria?.shopId
-          ? [{ id: criteria.shopId, businessId: b.id } as Shop]
-          : await this.listBusinessShops(b.id);
-        for (const s of shops) {
+    const businesses = rawBusinesses.filter(
+      (b) => !isKnownDemoRecord(b) && !isPlatformAdminBusinessSentinel(b.id)
+    );
+    let allShops: Shop[] = [];
+    if (criteria?.shopId) {
+      allShops = businesses.map(
+        (b) => ({ id: criteria.shopId!, businessId: b.id } as Shop)
+      );
+    } else {
+      const shopLists = await Promise.all(
+        businesses.map(async (b) => {
           try {
-            const sales = await this.listShopSales(b.id, s.id);
-            allSales.push(...sales);
+            const shops = await this.listBusinessShops(b.id);
+            return shops.filter((s) => !isKnownDemoRecord(s));
           } catch {
-            // continue
+            return [];
           }
-        }
-      } catch {
-        // continue
-      }
+        })
+      );
+      allShops = shopLists.flat();
     }
-    return allSales;
+    const salesLists = await Promise.all(
+      allShops.map(async (s) => {
+        try {
+          const sales = await this.listShopSales(s.businessId, s.id);
+          return sales.filter((sale) => !isKnownDemoRecord(sale));
+        } catch {
+          return [];
+        }
+      })
+    );
+    return salesLists.flat();
   }
 
   async recordPlatformAuditLog(log: PlatformAdminAuditLog): Promise<void> {
@@ -1650,6 +1971,103 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       logs = logs.slice(0, filters.limit);
     }
     return logs;
+  }
+
+  async listBusinessTransfers(businessId: string): Promise<ProductTransfer[]> {
+    const snap = await getDocs(
+      collection(db, 'businesses', businessId, 'transfers')
+    );
+    const transfers: ProductTransfer[] = snap.docs.map((docSnap) => {
+      const d = docSnap.data();
+      return {
+        id: d.id || docSnap.id,
+        transferNumber: d.transferNumber || `TRF-${docSnap.id.slice(0, 8)}`,
+        businessId: d.businessId || businessId,
+        sourceShopId: d.sourceShopId,
+        sourceShopName: d.sourceShopName || 'Source Shop',
+        sourceShopCode: d.sourceShopCode,
+        destinationShopId: d.destinationShopId,
+        destinationShopName: d.destinationShopName || 'Destination Shop',
+        destinationShopCode: d.destinationShopCode,
+        items: Array.isArray(d.items) ? d.items : [],
+        totalItems: typeof d.totalItems === 'number' ? d.totalItems : (d.items?.length || 0),
+        totalQuantity: typeof d.totalQuantity === 'number' ? d.totalQuantity : 0,
+        status: d.status || 'pending',
+        sourceDeducted: Boolean(d.sourceDeducted),
+        sourceDeductedAt: d.sourceDeductedAt,
+        notes: d.notes,
+        initiatedByUserId: d.initiatedByUserId,
+        initiatedByUserName: d.initiatedByUserName || 'Staff',
+        initiatedAt: d.initiatedAt || new Date().toISOString(),
+        confirmedByUserId: d.confirmedByUserId,
+        confirmedByUserName: d.confirmedByUserName,
+        confirmedAt: d.confirmedAt,
+        rejectionReason: d.rejectionReason,
+        rejectedByUserId: d.rejectedByUserId,
+        rejectedByUserName: d.rejectedByUserName,
+        rejectedAt: d.rejectedAt,
+        createdAt: d.createdAt || new Date().toISOString(),
+        updatedAt: d.updatedAt || new Date().toISOString(),
+      };
+    });
+    transfers.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return transfers;
+  }
+
+  async saveTransfer(transfer: ProductTransfer): Promise<void> {
+    const nowIso = new Date().toISOString();
+    const rawPayload: Record<string, any> = {
+      id: transfer.id,
+      transferNumber: transfer.transferNumber,
+      businessId: transfer.businessId,
+      sourceShopId: transfer.sourceShopId,
+      sourceShopName: transfer.sourceShopName,
+      destinationShopId: transfer.destinationShopId,
+      destinationShopName: transfer.destinationShopName,
+      items: (transfer.items || []).map((item) => {
+        const itemObj: Record<string, any> = {
+          productId: item.productId,
+          productName: item.productName,
+          sku: item.sku,
+          unit: item.unit || 'Unit',
+          quantity: Number(item.quantity || 1),
+        };
+        if (item.barcode) itemObj.barcode = item.barcode;
+        if (typeof item.costPrice === 'number') itemObj.costPrice = item.costPrice;
+        if (typeof item.sellingPrice === 'number') itemObj.sellingPrice = item.sellingPrice;
+        if (item.categoryId) itemObj.categoryId = item.categoryId;
+        if (item.categoryName) itemObj.categoryName = item.categoryName;
+        return itemObj;
+      }),
+      totalItems: Number(transfer.totalItems || transfer.items?.length || 0),
+      totalQuantity: Number(transfer.totalQuantity || 0),
+      status: transfer.status || 'pending',
+      initiatedByUserId: transfer.initiatedByUserId,
+      initiatedByUserName: transfer.initiatedByUserName,
+      initiatedAt: transfer.initiatedAt || nowIso,
+      createdAt: transfer.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+
+    if (transfer.sourceShopCode) rawPayload.sourceShopCode = transfer.sourceShopCode;
+    if (transfer.destinationShopCode) rawPayload.destinationShopCode = transfer.destinationShopCode;
+    if (transfer.notes && transfer.notes.trim()) rawPayload.notes = transfer.notes.trim();
+    if (transfer.sourceDeducted !== undefined) rawPayload.sourceDeducted = Boolean(transfer.sourceDeducted);
+    if (transfer.sourceDeductedAt) rawPayload.sourceDeductedAt = transfer.sourceDeductedAt;
+    if (transfer.confirmedByUserId) rawPayload.confirmedByUserId = transfer.confirmedByUserId;
+    if (transfer.confirmedByUserName) rawPayload.confirmedByUserName = transfer.confirmedByUserName;
+    if (transfer.confirmedAt) rawPayload.confirmedAt = transfer.confirmedAt;
+    if (transfer.rejectionReason && transfer.rejectionReason.trim()) rawPayload.rejectionReason = transfer.rejectionReason.trim();
+    if (transfer.rejectedByUserId) rawPayload.rejectedByUserId = transfer.rejectedByUserId;
+    if (transfer.rejectedByUserName) rawPayload.rejectedByUserName = transfer.rejectedByUserName;
+    if (transfer.rejectedAt) rawPayload.rejectedAt = transfer.rejectedAt;
+
+    const payload = sanitizeFirestorePayload(rawPayload);
+
+    await setDoc(
+      doc(db, 'businesses', transfer.businessId, 'transfers', transfer.id),
+      payload
+    );
   }
 
   async saveUserProfile(user: User): Promise<void> {
@@ -1785,6 +2203,11 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       ...(typeof resolvedRepairedAt === 'string'
         ? { repairedAt: resolvedRepairedAt.slice(0, 50) }
         : {}),
+      ...(typeof user.customRoleId === 'string' && user.customRoleId
+        ? { customRoleId: user.customRoleId.slice(0, 100) }
+        : typeof existingData?.customRoleId === 'string' && existingData.customRoleId
+        ? { customRoleId: existingData.customRoleId.slice(0, 100) }
+        : {}),
     };
     await setDoc(userRef, payload);
   }
@@ -1856,6 +2279,16 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       status: shop.status || 'active',
       terminalId: (shop.terminalId || `TERM-${shop.code}`).slice(0, 60),
       taxRatePercent: Number(shop.taxRatePercent ?? 7.5),
+      vatEnabled:
+        typeof shop.vatEnabled === 'boolean'
+          ? shop.vatEnabled
+          : typeof shop.taxRatePercent === 'number'
+            ? shop.taxRatePercent > 0
+            : false,
+      printVatOnReceipt:
+        typeof shop.printVatOnReceipt === 'boolean'
+          ? shop.printVatOnReceipt
+          : false,
       schemaVersion:
         typeof existingData?.schemaVersion === 'number' &&
         existingData.schemaVersion >= 1
@@ -1868,6 +2301,8 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       payload.receiptHeaderNote = shop.receiptHeaderNote.slice(0, 300);
     if (shop.receiptFooterNote)
       payload.receiptFooterNote = shop.receiptFooterNote.slice(0, 300);
+    if (shop.description)
+      payload.description = shop.description.slice(0, 300);
 
     await setDoc(shopRef, payload);
   }
@@ -1878,7 +2313,31 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       /[^a-zA-Z0-9_-]/g,
       '-'
     );
-    const payload = {
+    const productRef = doc(
+      db,
+      'businesses',
+      product.businessId,
+      'shops',
+      product.shopId,
+      'products',
+      product.id
+    );
+    let resolvedCreatedAt = product.createdAt;
+    if (!resolvedCreatedAt) {
+      try {
+        const existingSnap = await getDoc(productRef);
+        if (existingSnap.exists()) {
+          resolvedCreatedAt = existingSnap.data()?.createdAt;
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+    if (!resolvedCreatedAt) {
+      resolvedCreatedAt = product.updatedAt || nowIso;
+    }
+
+    const rawPayload = {
       id: product.id,
       shopId: product.shopId,
       businessId: product.businessId,
@@ -1888,27 +2347,21 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       barcode: (product.barcode || product.sku || product.id).slice(0, 64),
       name: product.name.slice(0, 160),
       unit: (product.unit || 'Unit').slice(0, 40),
-      costPriceKobo: Math.max(0, toMinorUnits(product.costPrice || 0)),
-      sellingPriceKobo: Math.max(0, toMinorUnits(product.sellingPrice || 0)),
+      costPrice: Number(product.costPrice || 0),
+      sellingPrice: Number(product.sellingPrice || 0),
+      costPriceKobo: Math.max(0, Math.round(toMinorUnits(product.costPrice || 0))),
+      sellingPriceKobo: Math.max(0, Math.round(toMinorUnits(product.sellingPrice || 0))),
       stockQuantity: Math.max(0, Math.floor(product.stockQuantity || 0)),
       reorderLevel: Math.max(0, Math.floor(product.reorderLevel || 0)),
+      hasExpiry: Boolean(product.hasExpiry),
+      expiryDate: product.hasExpiry && product.expiryDate ? String(product.expiryDate).slice(0, 40) : null,
       isActive: Boolean(product.isActive),
       schemaVersion: 1,
-      createdAt: (product.updatedAt || nowIso).slice(0, 50),
+      createdAt: resolvedCreatedAt.slice(0, 50),
       updatedAt: nowIso.slice(0, 50),
     };
-    await setDoc(
-      doc(
-        db,
-        'businesses',
-        product.businessId,
-        'shops',
-        product.shopId,
-        'products',
-        product.id
-      ),
-      payload
-    );
+    const payload = sanitizeFirestorePayload(rawPayload);
+    await setDoc(productRef, payload);
   }
 
   async deleteProduct(
@@ -1959,6 +2412,13 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
     request: SetTenantStatusRequest
   ): Promise<SetTenantStatusResponse> {
     const callableResult = await callSetTenantStatus(request);
+    return callableResult.data;
+  }
+
+  async resetUserPassword(
+    request: ResetUserPasswordRequest
+  ): Promise<ResetUserPasswordResponse> {
+    const callableResult = await callResetUserPassword(request);
     return callableResult.data;
   }
 
@@ -2523,10 +2983,60 @@ export class LiveFirestoreDataService {
           }
         }
       }
+      // Restore computer-local printer preferences without reading or writing them to Firestore.
+      if (this.dbAdapter) {
+        authorizedShops = await Promise.all(
+          authorizedShops.map(async (shop) => {
+            try {
+              const localShop = await this.dbAdapter!.getShop(shop.id);
 
-      // 5. Load users in this business (if business_owner, load all business staff; otherwise just current user)
+              if (
+                !localShop ||
+                localShop.business_id !== shop.businessId ||
+                !localShop.printer_settings_json
+              ) {
+                return shop;
+              }
+
+              const localSettings = JSON.parse(
+                localShop.printer_settings_json
+              ) as Shop['printerSettings'];
+
+              if (
+                !localSettings ||
+                typeof localSettings !== 'object' ||
+                typeof localSettings.defaultPrinterId !== 'string' ||
+                !['thermal', 'a4'].includes(
+                  localSettings.receiptPrinterMode
+                )
+              ) {
+                console.warn(
+                  `Ignoring invalid local printer settings for shop ${shop.id}.`
+                );
+                return shop;
+              }
+
+              return {
+                ...shop,
+                printerSettings: localSettings,
+              };
+            } catch (error) {
+              console.warn(
+                `Could not restore local printer settings for shop ${shop.id}:`,
+                error
+              );
+              return shop;
+            }
+          })
+        );
+      }
+      // 5. Load users in this business (if business_owner or staff with manage_staff permission, load all business staff; otherwise just current user)
       let businessUsers: User[] = [userProfile];
-      if (userProfile.role === 'business_owner') {
+      if (
+        userProfile.role === 'business_owner' ||
+        (Array.isArray(userProfile.permissions) &&
+          userProfile.permissions.includes('manage_staff'))
+      ) {
         try {
           const fetchedUsers = await this.cloudProvider.listBusinessUsers(
             business.id
@@ -2626,11 +3136,28 @@ export class LiveFirestoreDataService {
         sales.push(...mergedShopSales);
       }
 
-      // Preserve any previously cached local-only entities (invoices, debt book, suppliers, stockAdjustments) for this user & business
-      const existingCache = loadUserScopedLiveCache(userProfile.id);
-      const isSameBusinessCache =
-        existingCache && existingCache.businessId === business.id;
+      // Preserve any previously cached local-only entities (invoices, debt book, suppliers, stockAdjustments) for this business and its authorized users
+      const businessCache = loadBusinessScopedLiveCache(business.id);
+      const userCache = loadUserScopedLiveCache(userProfile.id);
+      const existingCache =
+        businessCache ||
+        (userCache && userCache.businessId === business.id ? userCache : null);
+      const isSameBusinessCache = !!existingCache;
       const authorizedShopIdSet = new Set(authorizedShops.map((s) => s.id));
+
+      if (
+        businessUsers.length <= 1 &&
+        existingCache?.users &&
+        existingCache.users.length > 0
+      ) {
+        const cachedStaff = existingCache.users.filter(
+          (u) => u.businessId === business.id && !isKnownDemoRecord(u)
+        );
+        const staffMap = new Map<string, User>();
+        cachedStaff.forEach((u) => staffMap.set(u.id, u));
+        businessUsers.forEach((u) => staffMap.set(u.id, u));
+        businessUsers = Array.from(staffMap.values());
+      }
 
       const dataset: LiveWorkspaceDataset = {
         businesses: [business],
@@ -2643,38 +3170,36 @@ export class LiveFirestoreDataService {
         stockAdjustments: isSameBusinessCache
           ? (existingCache.stockAdjustments || []).filter(
               (a) =>
-                a.businessId === business.id && authorizedShopIdSet.has(a.shopId)
+                a.businessId === business.id &&
+                (authorizedShopIdSet.has(a.shopId) || !a.shopId)
             )
           : [],
         sales,
         invoices: isSameBusinessCache
           ? (existingCache.invoices || []).filter(
               (i) =>
-                i.businessId === business.id && authorizedShopIdSet.has(i.shopId)
+                i.businessId === business.id &&
+                (authorizedShopIdSet.has(i.shopId) || !i.shopId)
             )
           : [],
         debtCustomers: isSameBusinessCache
           ? (existingCache.debtCustomers || []).filter(
-              (c) =>
-                c.businessId === business.id && authorizedShopIdSet.has(c.shopId)
+              (c) => c.businessId === business.id
             )
           : [],
         debtTransactions: isSameBusinessCache
           ? (existingCache.debtTransactions || []).filter(
-              (t) =>
-                t.businessId === business.id && authorizedShopIdSet.has(t.shopId)
+              (t) => t.businessId === business.id
             )
           : [],
         suppliers: isSameBusinessCache
           ? (existingCache.suppliers || []).filter(
-              (s) =>
-                s.businessId === business.id && authorizedShopIdSet.has(s.shopId)
+              (s) => s.businessId === business.id
             )
           : [],
         supplierSupplies: isSameBusinessCache
           ? (existingCache.supplierSupplies || []).filter(
-              (r) =>
-                r.businessId === business.id && authorizedShopIdSet.has(r.shopId)
+              (r) => r.businessId === business.id
             )
           : [],
         customRoles: isSameBusinessCache
@@ -2688,6 +3213,7 @@ export class LiveFirestoreDataService {
       };
 
       saveUserScopedLiveCache(userProfile.id, dataset);
+      saveBusinessScopedLiveCache(business.id, dataset);
 
       return {
         status: 'ready',
@@ -2821,13 +3347,35 @@ export class LiveFirestoreDataService {
         shopId,
       });
       for (const ls of localSales) {
-        if (
+        const existing = byId.get(ls.id);
+        if (existing) {
+          if (!existing.items || existing.items.length === 0) {
+            try {
+              const items = await this.dbAdapter.getSaleItems(ls.id);
+              if (items && items.length > 0) {
+                existing.items = items.map((item) => ({
+                  id: item.id,
+                  productId: item.product_id,
+                  sku: item.sku,
+                  barcode: item.barcode,
+                  productName: item.product_name,
+                  unit: item.unit,
+                  unitPrice: fromMinorUnits(item.unit_price_kobo),
+                  costPrice: fromMinorUnits(item.cost_price_kobo),
+                  quantity: item.quantity,
+                  lineTotal: fromMinorUnits(item.line_total_kobo),
+                }));
+              }
+            } catch {
+              // continue
+            }
+          }
+        } else if (
           ls.business_id === businessId &&
           ls.shop_id === shopId &&
           !isKnownDemoRecord(ls) &&
           !isPreFirebaseTestRecord(ls) &&
           ls.sync_conflict_reason !== PRE_FIREBASE_QUARANTINE_REASON &&
-          !byId.has(ls.id) &&
           !byReceipt.has(ls.receipt_number)
         ) {
           const items = await this.dbAdapter.getSaleItems(ls.id);
@@ -2939,7 +3487,7 @@ export class LiveFirestoreDataService {
       ownerUserId: cleanUid,
       ownerName: params.fullName.trim(),
       ownerEmail: cleanEmail,
-      contactEmail: params.businessInput.contactEmail.trim().toLowerCase(),
+      contactEmail: (params.businessInput.contactEmail || cleanEmail).trim().toLowerCase(),
       primaryPhone: params.businessInput.primaryPhone.trim(),
       headquartersAddress: params.businessInput.headquartersAddress.trim(),
       currencyCode: BASE_CURRENCY_CODE,
@@ -3212,12 +3760,13 @@ export class LiveFirestoreDataService {
         businessType: business.businessType,
         registrationNumber: business.registrationNumber,
         taxIdentificationNumber: business.taxIdentificationNumber,
-        contactEmail: business.contactEmail,
+        contactEmail: (business.contactEmail || business.ownerEmail || '').trim().toLowerCase(),
         primaryPhone: business.primaryPhone,
         headquartersAddress: business.headquartersAddress,
-        ownerUid: resolvedRequestOwnerUid,
+        ...(resolvedRequestOwnerUid ? { ownerUid: resolvedRequestOwnerUid } : {}),
         ownerName: ownerUser.fullName || business.ownerName,
         ownerEmail: ownerUser.email || business.ownerEmail,
+        ...(ownerUser.password ? { ownerPassword: ownerUser.password } : {}),
         currencyCode: business.currencyCode,
         currencySymbol: business.currencySymbol,
         defaultTaxRatePercent: business.defaultTaxRatePercent,
@@ -3352,6 +3901,16 @@ export class LiveFirestoreDataService {
                   ? serverShop.taxRatePercent
                   : initialShop?.taxRatePercent ??
                     canonicalBusiness.defaultTaxRatePercent,
+              vatEnabled:
+                typeof serverShop?.vatEnabled === 'boolean'
+                  ? serverShop.vatEnabled
+                  : typeof serverShop?.taxRatePercent === 'number'
+                    ? serverShop.taxRatePercent > 0
+                    : false,
+              printVatOnReceipt:
+                typeof serverShop?.printVatOnReceipt === 'boolean'
+                  ? serverShop.printVatOnReceipt
+                  : false,
               receiptHeaderNote: String(
                 serverShop?.receiptHeaderNote ||
                   initialShop?.receiptHeaderNote ||
@@ -3448,8 +4007,21 @@ export class LiveFirestoreDataService {
           created_at: canonicalBusiness.createdAt,
           updated_at: canonicalBusiness.createdAt,
         });
-        if (canonicalShop) {
+                if (canonicalShop) {
+          const existingLocalCanonicalShop =
+            await this.dbAdapter.getShop(canonicalShop.id);
+
+          if (
+            existingLocalCanonicalShop &&
+            existingLocalCanonicalShop.business_id !== canonicalShop.businessId
+          ) {
+            throw new Error(
+              'Local canonical shop ownership verification failed.'
+            );
+          }
+
           await this.dbAdapter.saveShop({
+            ...(existingLocalCanonicalShop || {}),
             id: canonicalShop.id,
             business_id: canonicalShop.businessId,
             code: canonicalShop.code,
@@ -3464,6 +4036,8 @@ export class LiveFirestoreDataService {
             tax_rate_percent: canonicalShop.taxRatePercent,
             receipt_header_note: canonicalShop.receiptHeaderNote,
             receipt_footer_note: canonicalShop.receiptFooterNote,
+			printer_settings_json:
+            existingLocalCanonicalShop?.printer_settings_json,
             created_at: canonicalShop.createdAt,
             updated_at: canonicalShop.createdAt,
           });
@@ -3534,10 +4108,23 @@ export class LiveFirestoreDataService {
         updated_at: canonicalBusiness.createdAt,
       });
     }
-    if (initialShop) {
+        if (initialShop) {
       await this.cloudProvider.saveShop(initialShop);
       if (this.dbAdapter) {
+        const existingLocalInitialShop =
+          await this.dbAdapter.getShop(initialShop.id);
+
+        if (
+          existingLocalInitialShop &&
+          existingLocalInitialShop.business_id !== initialShop.businessId
+        ) {
+          throw new Error(
+            'Local initial shop ownership verification failed.'
+          );
+        }
+
         await this.dbAdapter.saveShop({
+          ...(existingLocalInitialShop || {}),
           id: initialShop.id,
           business_id: initialShop.businessId,
           code: initialShop.code,
@@ -3552,6 +4139,8 @@ export class LiveFirestoreDataService {
           tax_rate_percent: initialShop.taxRatePercent,
           receipt_header_note: initialShop.receiptHeaderNote,
           receipt_footer_note: initialShop.receiptFooterNote,
+		  printer_settings_json:
+          existingLocalInitialShop?.printer_settings_json,
           created_at: initialShop.createdAt,
           updated_at: initialShop.createdAt,
         });
@@ -3776,6 +4365,25 @@ export class LiveFirestoreDataService {
       syntheticProfileDeleted: Boolean(response.removedSyntheticOwnerUserId),
       business: updatedBusiness,
       primaryOwner: updatedOwner,
+    };
+  }
+
+  async resetLiveUserPassword(params: {
+    targetUserId: string;
+    targetEmail: string;
+    newPassword: string;
+  }): Promise<{ success: boolean; message: string; targetUserId: string }> {
+    if (typeof this.cloudProvider.resetUserPassword === 'function') {
+      return await this.cloudProvider.resetUserPassword({
+        targetUserId: params.targetUserId,
+        targetEmail: params.targetEmail.trim().toLowerCase(),
+        newPassword: params.newPassword.trim(),
+      });
+    }
+    return {
+      success: true,
+      message: 'Password updated',
+      targetUserId: params.targetUserId,
     };
   }
 
@@ -4293,12 +4901,24 @@ export class LiveFirestoreDataService {
     };
   }
 
-  async persistLiveShop(
+    async persistLiveShop(
     shop: Shop,
     ownerUserId?: string,
     updatedOwnerShopIds?: string[]
   ): Promise<void> {
+    const existingLocalShop = this.dbAdapter
+      ? await this.dbAdapter.getShop(shop.id)
+      : null;
+
+    if (
+      existingLocalShop &&
+      existingLocalShop.business_id !== shop.businessId
+    ) {
+      throw new Error('Local shop ownership verification failed.');
+    }
+
     await this.cloudProvider.saveShop(shop);
+
     if (this.dbAdapter) {
       await this.dbAdapter.saveShop({
         id: shop.id,
@@ -4315,17 +4935,23 @@ export class LiveFirestoreDataService {
         tax_rate_percent: shop.taxRatePercent,
         receipt_header_note: shop.receiptHeaderNote,
         receipt_footer_note: shop.receiptFooterNote,
+		printer_settings_json:
+        existingLocalShop?.printer_settings_json,
         created_at: shop.createdAt,
         updated_at: shop.createdAt,
       });
     }
     if (ownerUserId && updatedOwnerShopIds) {
-      const existingOwner = await this.cloudProvider.getUserProfile(ownerUserId);
-      if (existingOwner) {
-        await this.cloudProvider.saveUserProfile({
-          ...existingOwner,
-          assignedShopIds: updatedOwnerShopIds,
-        });
+      try {
+        const existingOwner = await this.cloudProvider.getUserProfile(ownerUserId);
+        if (existingOwner && existingOwner.role !== 'business_owner') {
+          await this.cloudProvider.saveUserProfile({
+            ...existingOwner,
+            assignedShopIds: updatedOwnerShopIds,
+          });
+        }
+      } catch (ownerErr) {
+        console.warn('Skipped owner assignedShopIds cloud update:', ownerErr);
       }
     }
   }
@@ -4410,6 +5036,7 @@ export class LiveFirestoreDataService {
     options?: {
       idempotencyKey?: string;
       explicitStaffUid?: string;
+      supportSessionId?: string;
     }
   ): Promise<InviteLiveStaffResult> {
     this.validateStaffProfileConstraints(user);
@@ -4445,13 +5072,15 @@ export class LiveFirestoreDataService {
       const request: InviteAuthorizedStaffRequest = {
         idempotencyKey: rawIdemKey,
         businessId: user.businessId,
-        staffUid: resolvedRequestStaffUid,
+        ...(resolvedRequestStaffUid ? { staffUid: resolvedRequestStaffUid } : {}),
         fullName: user.fullName.trim(),
         email: cleanEmail,
         role: user.role as 'shop_manager' | 'cashier',
         roleLabel: user.roleLabel,
         assignedShopIds: Array.from(new Set(user.assignedShopIds)),
         permissions: Array.from(new Set(user.permissions)),
+        ...(user.password ? { password: user.password } : {}),
+        ...(options?.supportSessionId ? { supportSessionId: options.supportSessionId } : {}),
       };
 
       const response = await this.cloudProvider.inviteAuthorizedStaff(request);
@@ -4577,32 +5206,74 @@ export class LiveFirestoreDataService {
     await this.cloudProvider.saveUserProfile(user);
   }
 
-  async persistLiveProduct(product: Product): Promise<void> {
+  async persistLiveProduct(
+    product: Product,
+    options?: { operationType?: 'create' | 'update'; supportSessionId?: string }
+  ): Promise<void> {
     if (isKnownDemoRecord(product) || isPreFirebaseTestRecord(product)) {
-      throw new Error(
-        'QUARANTINE_GUARD: Refusing to upload demo or pre-Firebase test product to Cloud Firestore.'
-      );
+      throw new Error('QUARANTINE_GUARD: Refusing to upload demo or pre-Firebase test product to Cloud Firestore.');
     }
-    await this.cloudProvider.saveProduct(product);
+    const operationType = options?.operationType || 'create';
+    if (!product.businessId || !product.shopId || !product.id) {
+      throw new Error('INVALID_PRODUCT_TENANT: Product must have business, shop, and product IDs.');
+    }
+    if (options?.supportSessionId) {
+      const operationId = `product-${operationType}-${product.id}-${crypto.randomUUID()}`;
+      const request: SyncOperationRequest = {
+        operationId,
+        idempotencyKey: `idem-${operationId}`,
+        businessId: product.businessId,
+        shopId: product.shopId,
+        entityType: 'product',
+        entityId: product.id,
+        operationType,
+        schemaVersion: 6,
+        supportSessionId: options.supportSessionId,
+        payload: {
+          product: {
+            id: product.id,
+            businessId: product.businessId,
+            shopId: product.shopId,
+            sku: product.sku,
+            barcode: product.barcode,
+            name: product.name,
+            categoryId: product.categoryId,
+            categoryName: product.categoryName,
+            unit: product.unit,
+            costPrice: product.costPrice,
+            sellingPrice: product.sellingPrice,
+            costPriceKobo: toMinorUnits(product.costPrice || 0),
+            sellingPriceKobo: toMinorUnits(product.sellingPrice || 0),
+            stockQuantity: product.stockQuantity,
+            reorderLevel: product.reorderLevel,
+            hasExpiry: Boolean(product.hasExpiry),
+            expiryDate: product.hasExpiry && product.expiryDate ? String(product.expiryDate) : null,
+            isActive: product.isActive,
+          },
+        },
+      };
+      const response = await callSyncPosOperation(request);
+      const result = response.data;
+
+      if (result.outcome !== 'acknowledged') {
+        throw new Error(
+          result.errorMessage ||
+            result.conflictReason ||
+            'Synchronization was not acknowledged by the server.'
+        );
+      }
+    } else {
+      await this.cloudProvider.saveProduct(product);
+    }
     if (this.dbAdapter) {
       await this.dbAdapter.saveProduct({
-        id: product.id,
-        shop_id: product.shopId,
-        business_id: product.businessId,
-        category_id: product.categoryId,
-        category_name: product.categoryName,
-        sku: product.sku,
-        barcode: product.barcode,
-        name: product.name,
-        unit: product.unit,
-        cost_price_kobo: toMinorUnits(product.costPrice),
-        selling_price_kobo: toMinorUnits(product.sellingPrice),
-        stock_quantity: product.stockQuantity,
-        reorder_level: product.reorderLevel,
-        tax_exempt: 0,
-        is_active: product.isActive ? 1 : 0,
-        created_at: product.updatedAt,
-        updated_at: product.updatedAt,
+        id: product.id, shop_id: product.shopId, business_id: product.businessId,
+        category_id: product.categoryId, category_name: product.categoryName,
+        sku: product.sku, barcode: product.barcode, name: product.name, unit: product.unit,
+        cost_price_kobo: toMinorUnits(product.costPrice), selling_price_kobo: toMinorUnits(product.sellingPrice),
+        stock_quantity: product.stockQuantity, reorder_level: product.reorderLevel,
+        tax_exempt: 0, is_active: product.isActive ? 1 : 0,
+        created_at: product.updatedAt, updated_at: product.updatedAt,
       });
     }
   }
@@ -4625,6 +5296,7 @@ export class LiveFirestoreDataService {
       operationId?: string;
       idempotencyKey?: string;
       actorUserId?: string;
+      supportSessionId?: string;
     }
   ): Promise<SyncOperationResponse> {
     const operationId = (options?.operationId || `sync-${sale.id}`).trim();
@@ -4757,6 +5429,7 @@ export class LiveFirestoreDataService {
       entityId: sale.id,
       operationType: 'create',
       schemaVersion: 6,
+      ...(options?.supportSessionId ? { supportSessionId: options.supportSessionId } : {}),
       payload: {
         sale: dbSalePayload,
         items: dbItemsPayload,
@@ -4853,6 +5526,14 @@ export class LiveFirestoreDataService {
         }
       }
 
+      if (
+        options?.supportSessionId &&
+        typeof this.cloudProvider.executeAtomicSaleSync !== 'function'
+      ) {
+        throw new Error(
+          'SUPPORT_MODE_SYNC_UNAVAILABLE: Support Mode sales must use the server-authorized callable; direct provider fallback is disabled.'
+        );
+      }
       if (typeof this.cloudProvider.executeAtomicSaleSync === 'function') {
         response = await this.cloudProvider.executeAtomicSaleSync(syncRequest);
       } else {
@@ -5122,6 +5803,10 @@ export class LiveFirestoreDataService {
     }
   }
 
+  async listShopProducts(businessId: string, shopId: string): Promise<Product[]> {
+    return this.cloudProvider.listShopProducts(businessId, shopId);
+  }
+
   async listAllShopsGlobal(): Promise<Shop[]> {
     if (typeof this.cloudProvider.listAllShopsGlobal === 'function') {
       return this.cloudProvider.listAllShopsGlobal();
@@ -5143,17 +5828,22 @@ export class LiveFirestoreDataService {
     if (typeof this.cloudProvider.listAllProductsGlobal === 'function') {
       return this.cloudProvider.listAllProductsGlobal(businessId);
     }
-    const businesses = businessId
+    const rawBusinesses = businessId
       ? [{ id: businessId } as Business]
       : await this.cloudProvider.listAllBusinesses();
+    const businesses = rawBusinesses.filter(
+      (b) => !isKnownDemoRecord(b) && !isPlatformAdminBusinessSentinel(b.id)
+    );
     const products: Product[] = [];
     for (const b of businesses) {
       try {
-        const shops = await this.cloudProvider.listBusinessShops(b.id);
+        const shops = (await this.cloudProvider.listBusinessShops(b.id)).filter(
+          (s) => !isKnownDemoRecord(s)
+        );
         for (const s of shops) {
           try {
             const p = await this.cloudProvider.listShopProducts(b.id, s.id);
-            products.push(...p);
+            products.push(...p.filter((prod) => !isKnownDemoRecord(prod)));
           } catch {
             // continue
           }
@@ -5173,21 +5863,25 @@ export class LiveFirestoreDataService {
       return this.cloudProvider.listAllSalesGlobal(criteria);
     }
     if (criteria?.businessId && criteria?.shopId) {
-      return this.cloudProvider.listShopSales(criteria.businessId, criteria.shopId);
+      const sales = await this.cloudProvider.listShopSales(criteria.businessId, criteria.shopId);
+      return sales.filter((s) => !isKnownDemoRecord(s));
     }
-    const businesses = criteria?.businessId
+    const rawBusinesses = criteria?.businessId
       ? [{ id: criteria.businessId } as Business]
       : await this.cloudProvider.listAllBusinesses();
+    const businesses = rawBusinesses.filter(
+      (b) => !isKnownDemoRecord(b) && !isPlatformAdminBusinessSentinel(b.id)
+    );
     const sales: SaleTransaction[] = [];
     for (const b of businesses) {
       try {
         const shops = criteria?.shopId
           ? [{ id: criteria.shopId, businessId: b.id } as Shop]
-          : await this.cloudProvider.listBusinessShops(b.id);
+          : (await this.cloudProvider.listBusinessShops(b.id)).filter((s) => !isKnownDemoRecord(s));
         for (const s of shops) {
           try {
             const sSales = await this.cloudProvider.listShopSales(b.id, s.id);
-            sales.push(...sSales);
+            sales.push(...sSales.filter((sale) => !isKnownDemoRecord(sale)));
           } catch {
             // continue
           }
@@ -5226,6 +5920,86 @@ export class LiveFirestoreDataService {
     return [];
   }
 
+  async persistInventoryMovement(
+    adjustment: StockAdjustment,
+    supportSessionId?: string
+  ): Promise<void> {
+    const request: SyncOperationRequest = {
+      operationId: `inventory-${adjustment.id}`,
+      idempotencyKey: `idem-inventory-${adjustment.id}`,
+      businessId: adjustment.businessId,
+      shopId: adjustment.shopId,
+      entityType: 'inventory_movement',
+      entityId: adjustment.id,
+      operationType: 'adjust',
+      schemaVersion: 6,
+      ...(supportSessionId ? { supportSessionId } : {}),
+      payload: { movement: {
+        id: adjustment.id,
+        productId: adjustment.productId,
+        productName: adjustment.productName,
+        productSku: adjustment.productSku,
+        type: adjustment.type,
+        quantityDelta: adjustment.quantityDelta,
+        reason: adjustment.reason,
+        performedByUserId: adjustment.performedByUserId,
+        performedByName: adjustment.performedByName,
+        createdAt: adjustment.createdAt,
+      } },
+    };
+   const response = await callSyncPosOperation(request);
+const result = response.data;
+
+    if (result.outcome !== 'acknowledged') {
+      throw new Error(
+        result.errorMessage ||
+        result.conflictReason ||
+        'Synchronization was not acknowledged by the server.'
+      );
+    }
+  }
+
+  async processLiveReceiptReturn(params: {
+    businessId: string;
+    shopId: string;
+    saleId: string;
+    updatedSale: SaleTransaction;
+    returnedItems: ReceiptReturnItemSummary[];
+    reason: string;
+    supportSessionId?: string;
+  }): Promise<void> {
+    const idempotencyKey = `idem-ret-${params.saleId}-${Date.now()}`;
+    const request: SyncOperationRequest = {
+      operationId: `ret-${params.saleId}-${Date.now()}`,
+      idempotencyKey,
+      businessId: params.businessId,
+      shopId: params.shopId,
+      entityType: 'sale',
+      entityId: params.saleId,
+      operationType: 'return' as any,
+      schemaVersion: 6,
+      ...(params.supportSessionId ? { supportSessionId: params.supportSessionId } : {}),
+      payload: {
+        saleReturn: {
+          saleId: params.saleId,
+          updatedSale: params.updatedSale,
+          returnedItems: params.returnedItems,
+          reason: params.reason,
+        },
+      } as any,
+    };
+
+    const response = await callSyncPosOperation(request);
+    const result = response.data;
+    if (result.outcome !== 'acknowledged') {
+      throw new Error(
+        result.errorMessage ||
+        result.conflictReason ||
+        'Failed to process receipt return in Cloud Firestore.'
+      );
+    }
+  }
+
   async adjustInventoryAsAdmin(params: {
     businessId: string;
     shopId: string;
@@ -5234,59 +6008,38 @@ export class LiveFirestoreDataService {
     type: StockAdjustmentType;
     reason: string;
     adminUser: User;
+    supportSessionId: string;
   }): Promise<StockAdjustment> {
-    if (!params.reason.trim()) {
-      throw new Error('A reason is mandatory for platform admin inventory adjustments.');
+    if (!params.supportSessionId) throw new Error('An active Platform Admin support session is required.');
+    if (!params.reason.trim() || !Number.isSafeInteger(params.delta) || params.delta === 0) {
+      throw new Error('A reason and a non-zero whole-number stock adjustment are required.');
     }
     const products = await this.cloudProvider.listShopProducts(params.businessId, params.shopId);
-    const prod = products.find((p) => p.id === params.productId);
-    if (!prod) {
-      throw new Error(`Product ${params.productId} not found in shop ${params.shopId}`);
+    const product = products.find((item) => item.id === params.productId);
+    if (!product) throw new Error(`Product ${params.productId} not found in shop ${params.shopId}`);
+    const previousQuantity = product.stockQuantity;
+    const newQuantity = previousQuantity + params.delta;
+    if (!Number.isSafeInteger(newQuantity) || newQuantity < 0) {
+      throw new Error('This adjustment would result in invalid or negative stock.');
     }
-    const previousQuantity = prod.stockQuantity;
-    const newQuantity = Math.max(0, previousQuantity + params.delta);
-    const updatedProd: Product = {
-      ...prod,
-      stockQuantity: newQuantity,
-      updatedAt: new Date().toISOString(),
-    };
-    await this.cloudProvider.saveProduct(updatedProd);
-
-    const adjustmentId = `adj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     const adjustment: StockAdjustment = {
-      id: adjustmentId,
+      id: `adj-support-${crypto.randomUUID()}`,
       shopId: params.shopId,
       businessId: params.businessId,
-      productId: prod.id,
-      productName: prod.name,
-      productSku: prod.sku,
+      productId: product.id,
+      productName: product.name,
+      productSku: product.sku,
       type: params.type,
       quantityDelta: params.delta,
       previousQuantity,
       newQuantity,
-      reason: `Platform Admin Adjustment: ${params.reason.trim()}`,
+      reason: params.reason.trim(),
       performedByUserId: params.adminUser.id,
       performedByName: params.adminUser.fullName,
       createdAt: new Date().toISOString(),
-      syncStatus: 'synced_demo',
+      syncStatus: 'synced',
     };
-
-    await this.recordPlatformAuditLog({
-      businessId: params.businessId,
-      businessName: prod.businessId,
-      shopId: params.shopId,
-      adminUid: params.adminUser.id,
-      adminEmail: params.adminUser.email,
-      adminName: params.adminUser.fullName,
-      action: 'inventory_adjusted',
-      targetEntityType: 'product',
-      targetEntityId: prod.id,
-      targetEntityName: prod.name,
-      previousState: { stockQuantity: previousQuantity },
-      newState: { stockQuantity: newQuantity, delta: params.delta, type: params.type },
-      reason: params.reason.trim(),
-    });
-
+    await this.persistInventoryMovement(adjustment, params.supportSessionId);
     return adjustment;
   }
 
@@ -5417,5 +6170,272 @@ export class LiveFirestoreDataService {
     });
 
     return updatedUser;
+  }
+
+  async createUserAsAdmin(params: {
+    businessId: string;
+    fullName: string;
+    email: string;
+    password?: string;
+    role: UserRole;
+    roleLabel?: string;
+    assignedShopIds: string[];
+    permissions: PermissionKey[];
+    adminUser: User;
+    reason?: string;
+    explicitUserId?: string;
+  }): Promise<User> {
+    const cleanEmail = params.email.trim().toLowerCase();
+    const cleanFullName = params.fullName.trim();
+    if (!cleanFullName) {
+      throw new Error('User full name is required.');
+    }
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('A valid email address is required.');
+    }
+    if (isAuthorizedPlatformAdminEmail(cleanEmail)) {
+      throw new Error('Platform Administrator email cannot be used for tenant staff.');
+    }
+    if (params.role !== 'business_owner' && (!params.assignedShopIds || params.assignedShopIds.length === 0)) {
+      throw new Error('At least one assigned shop is required.');
+    }
+
+    const newUserId =
+      params.explicitUserId ||
+      `usr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const roleTitle =
+      params.roleLabel ||
+      (params.role === 'shop_manager' ? 'Shop Manager' : params.role === 'cashier' ? 'Cashier' : 'Business Owner');
+    const validatedPermissions = Array.from(new Set(params.permissions));
+
+    const nowIso = new Date().toISOString();
+    const cleanUserPassword = params.password?.trim();
+    const newUser: User = {
+      id: newUserId,
+      businessId: params.businessId,
+      username: cleanEmail.split('@')[0].slice(0, 40),
+      email: cleanEmail,
+      fullName: cleanFullName,
+      role: params.role,
+      roleLabel: roleTitle,
+      assignedShopIds: params.assignedShopIds,
+      permissions: validatedPermissions,
+      status: 'active',
+      password: cleanUserPassword || undefined,
+      passwordSetupStatus: cleanUserPassword ? 'verified' : 'pending',
+      emailVerified: Boolean(cleanUserPassword),
+      createdAt: nowIso,
+      lastLoginAt: 'Never (Newly Created)',
+    };
+
+    if (cleanUserPassword && typeof this.cloudProvider.resetUserPassword === 'function') {
+      try {
+        const resetRes = await this.cloudProvider.resetUserPassword({
+          targetUserId: newUserId,
+          targetEmail: cleanEmail,
+          newPassword: cleanUserPassword,
+        });
+        if (resetRes.targetUserId) {
+          newUser.id = resetRes.targetUserId;
+        }
+      } catch (pwErr) {
+        console.warn('[Admin] Password provisioning for user:', pwErr);
+      }
+    }
+
+    await this.cloudProvider.saveUserProfile(newUser);
+
+    await this.recordPlatformAuditLog({
+      businessId: params.businessId,
+      businessName: params.businessId,
+      adminUid: params.adminUser.id,
+      adminEmail: params.adminUser.email,
+      adminName: params.adminUser.fullName,
+      action: 'staff_user_created',
+      targetEntityType: 'user',
+      targetEntityId: newUser.id,
+      targetEntityName: newUser.fullName,
+      newState: {
+        role: newUser.role,
+        roleLabel: newUser.roleLabel,
+        assignedShopIds: newUser.assignedShopIds,
+        email: newUser.email,
+      },
+      reason:
+        params.reason?.trim() ||
+        `Platform Admin provisioned user ${newUser.fullName} (${newUser.email}) for business ${params.businessId}`,
+    });
+
+    return newUser;
+  }
+
+  async listShopSuppliers(businessId: string, shopId: string): Promise<Supplier[]> {
+    try {
+      const snap = await getDocs(
+        collection(db, 'businesses', businessId, 'shops', shopId, 'suppliers')
+      );
+      if (snap.empty) {
+        const bizSnap = await getDocs(
+          collection(db, 'businesses', businessId, 'suppliers')
+        );
+        return bizSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Supplier));
+      }
+      return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Supplier));
+    } catch {
+      return [];
+    }
+  }
+
+  async listShopSupplierSupplies(businessId: string, shopId: string): Promise<SupplierSupplyRecord[]> {
+    try {
+      const snap = await getDocs(
+        collection(db, 'businesses', businessId, 'shops', shopId, 'supplier_supplies')
+      );
+      if (snap.empty) {
+        const bizSnap = await getDocs(
+          collection(db, 'businesses', businessId, 'supplier_supplies')
+        );
+        return bizSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as SupplierSupplyRecord));
+      }
+      return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as SupplierSupplyRecord));
+    } catch {
+      return [];
+    }
+  }
+
+  async listShopCustomers(businessId: string, shopId: string): Promise<DebtCustomer[]> {
+    try {
+      const snap = await getDocs(
+        collection(db, 'businesses', businessId, 'shops', shopId, 'customers')
+      );
+      return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as DebtCustomer));
+    } catch {
+      return [];
+    }
+  }
+
+  async listShopInvoices(businessId: string, shopId: string): Promise<Invoice[]> {
+    try {
+      const snap = await getDocs(
+        collection(db, 'businesses', businessId, 'shops', shopId, 'invoices')
+      );
+      return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Invoice));
+    } catch {
+      return [];
+    }
+  }
+
+  async saveShopSupplier(businessId: string, shopId: string, supplier: Supplier): Promise<void> {
+    try {
+      await setDoc(doc(db, 'businesses', businessId, 'shops', shopId, 'suppliers', supplier.id), supplier, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save supplier to cloud Firestore:', err);
+    }
+  }
+
+  async saveShopSupplierSupply(businessId: string, shopId: string, supply: SupplierSupplyRecord): Promise<void> {
+    try {
+      await setDoc(doc(db, 'businesses', businessId, 'shops', shopId, 'supplier_supplies', supply.id), supply, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save supplier supply to cloud Firestore:', err);
+    }
+  }
+
+  async loadSupportWorkspaceData(
+    businessId: string,
+    shopId: string
+  ): Promise<{
+    products: Product[];
+    sales: SaleTransaction[];
+    users: User[];
+    transfers: ProductTransfer[];
+    categories: ProductCategory[];
+    suppliers: Supplier[];
+    supplierSupplies: SupplierSupplyRecord[];
+    debtCustomers: DebtCustomer[];
+    invoices: Invoice[];
+  }> {
+    const [
+      products,
+      sales,
+      users,
+      transfers,
+      suppliers,
+      supplierSupplies,
+      debtCustomers,
+      invoices,
+    ] = await Promise.all([
+      this.cloudProvider.listShopProducts(businessId, shopId).catch((err) => {
+        console.warn('[SupportMode] Failed to list shop products:', err);
+        return [] as Product[];
+      }),
+      this.cloudProvider.listShopSales(businessId, shopId).catch((err) => {
+        console.warn('[SupportMode] Failed to list shop sales:', err);
+        return [] as SaleTransaction[];
+      }),
+      this.cloudProvider.listBusinessUsers(businessId).catch((err) => {
+        console.warn('[SupportMode] Failed to list business users:', err);
+        return [] as User[];
+      }),
+      typeof this.cloudProvider.listBusinessTransfers === 'function'
+        ? this.cloudProvider.listBusinessTransfers(businessId).catch(() => [] as ProductTransfer[])
+        : Promise.resolve([] as ProductTransfer[]),
+      this.listShopSuppliers(businessId, shopId),
+      this.listShopSupplierSupplies(businessId, shopId),
+      this.listShopCustomers(businessId, shopId),
+      this.listShopInvoices(businessId, shopId),
+    ]);
+
+    const validProducts = products.filter((p) => !isKnownDemoRecord(p));
+    const categories: ProductCategory[] = [];
+    const seenCatIds = new Set<string>();
+    validProducts.forEach((p) => {
+      const catId = p.categoryId || `cat-${shopId}-general`;
+      if (!seenCatIds.has(catId)) {
+        seenCatIds.add(catId);
+        categories.push({
+          id: catId,
+          shopId,
+          businessId,
+          name: p.categoryName || 'General Merchandise',
+          description: `Category for shop`,
+        });
+      }
+    });
+
+    if (categories.length === 0) {
+      categories.push({
+        id: `cat-${shopId}-general`,
+        shopId,
+        businessId,
+        name: 'General Merchandise',
+        description: 'Default category',
+      });
+    }
+
+    return {
+      products: validProducts,
+      sales: sales.filter((s) => !isKnownDemoRecord(s)),
+      users: users.filter((u) => !isKnownDemoRecord(u)),
+      transfers,
+      categories,
+      suppliers: suppliers.filter((s) => !isKnownDemoRecord(s as any)),
+      supplierSupplies: supplierSupplies.filter((r) => !isKnownDemoRecord(r as any)),
+      debtCustomers: debtCustomers.filter((c) => !isKnownDemoRecord(c as any)),
+      invoices: invoices.filter((i) => !isKnownDemoRecord(i as any)),
+    };
+  }
+
+  async listBusinessTransfers(businessId: string): Promise<ProductTransfer[]> {
+    if (typeof this.cloudProvider.listBusinessTransfers === 'function') {
+      return this.cloudProvider.listBusinessTransfers(businessId);
+    }
+    return [];
+  }
+
+  async saveTransfer(transfer: ProductTransfer): Promise<void> {
+    if (typeof this.cloudProvider.saveTransfer === 'function') {
+      await this.cloudProvider.saveTransfer(transfer);
+    }
   }
 }

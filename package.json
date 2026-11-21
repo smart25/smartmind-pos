@@ -1,7 +1,10 @@
 {
-  "name": "react-example",
+  "name": "smartmind-pos",
+  "productName": "SmartMind POS",
+  "description": "SmartMind Multi-Shop Point of Sale & Inventory Management System",
+  "author": "SmartMind Technologies",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -12,10 +15,13 @@
     "build:staging": "vite build --mode staging",
     "build:electron": "esbuild electron/main.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-electron/main.js && esbuild electron/preload.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist-electron/preload.cjs",
     "build:all": "npm run build && npm run build:electron",
+    "dist": "npm run build && npm run build:electron && electron-builder",
+    "dist:win": "npm run build && npm run build:electron && electron-builder --win",
+    "dist:mac": "npm run build && npm run build:electron && electron-builder --mac",
     "electron:start": "electron .",
     "electron:dev": "concurrently -k -s first \"npm run dev\" \"npm run build:electron && electron .\"",
     "preview": "vite preview",
-    "clean": "rm -rf dist dist-electron server.js",
+    "clean": "rm -rf dist dist-electron server.js release",
     "test": "tsx --test src/utils/posCalculations.test.ts src/db/phase5.test.ts src/db/phase6.test.ts src/db/quarantineCleanup.test.ts src/db/electronStage1.test.ts src/db/stagingIsolation.test.ts src/db/indexedDbAdapterCleanup.integration.test.ts src/db/indexedDbAdapterIsolation.test.ts src/db/indexedDbTransactionSafety.test.ts",
     "test:rules": "tsx --test src/db/firestoreRulesEmulator.test.ts",
     "test:rules:emulator": "firebase emulators:exec --only firestore --project gen-lang-client-0985802946 \"npm run test:rules\"",
@@ -52,6 +58,7 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^10.0.6",
     "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.0",
     "eslint": "^10.13.0",
     "fake-indexeddb": "^6.2.7",
@@ -59,5 +66,67 @@
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
     "vite-plugin-pwa": "^2.0.0"
+  },
+  "build": {
+    "appId": "com.smartmindpos.desktop",
+    "productName": "SmartMind POS",
+    "copyright": "Copyright © 2026 SmartMind Technologies",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "public/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "SmartMind POS",
+      "uninstallDisplayName": "SmartMind POS",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.business"
+    },
+    "dmg": {
+      "title": "SmartMind POS ${version}",
+      "icon": "build/icon.png",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
   }
 }

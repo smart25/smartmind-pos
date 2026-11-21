@@ -18,6 +18,7 @@ import {
   Business,
   DebtCustomer,
   PaymentMethod,
+  Product,
   SaleTransaction,
   Shop,
   User,
@@ -43,6 +44,7 @@ interface SalesSummaryPageProps {
   business: Business;
   shop: Shop;
   shopSales: SaleTransaction[];
+  products?: Product[];
   businessUsers?: User[];
   shopDebtCustomers?: DebtCustomer[];
   currentUser: User;
@@ -66,6 +68,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
   business,
   shop,
   shopSales,
+  products = [],
   businessUsers = [],
   shopDebtCustomers = [],
   currentUser,
@@ -228,6 +231,78 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
     [filteredSales, shopOutstandingDebtTotal]
   );
 
+  // Build lookup map for product units
+  const productUnitMap = useMemo(() => {
+    const map = new Map<string, string>();
+    products.forEach((p) => {
+      if (p.unit) map.set(p.id, p.unit);
+    });
+    return map;
+  }, [products]);
+
+  // Map sales transactions to 1 row per sale / receipt, matching PDF format exactly
+  const saleRows = useMemo(() => {
+    return filteredSales.map((sale, idx) => {
+      const saleQuantity =
+        sale.items && sale.items.length > 0
+          ? sale.items.reduce((sum, item) => sum + item.quantity, 0)
+          : 1;
+
+      const itemsSummary =
+        sale.items && sale.items.length > 0
+          ? sale.items
+              .map((item) =>
+                item.quantity > 1
+                  ? `${item.productName} (x${item.quantity})`
+                  : item.productName
+              )
+              .join(', ')
+          : 'General Sale';
+
+      const distinctUnits =
+        sale.items && sale.items.length > 0
+          ? Array.from(
+              new Set(
+                sale.items.map(
+                  (item) =>
+                    item.unit || productUnitMap.get(item.productId) || 'Unit'
+                )
+              )
+            )
+          : ['Unit'];
+
+      const unitDisplay =
+        distinctUnits.length === 1
+          ? distinctUnits[0]
+          : distinctUnits.length > 1
+          ? 'Mixed'
+          : 'Unit';
+
+      return {
+        id: sale.id,
+        index: idx + 1,
+        dateTime: sale.createdAt,
+        productName: itemsSummary,
+        unit: unitDisplay,
+        quantity: saleQuantity,
+        amount: sale.totalAmount,
+        paymentMethod: formatPaymentMethodLabel(sale.paymentMethod),
+        staffName: sale.cashierName || 'Staff',
+        receiptNumber: sale.receiptNumber,
+      };
+    });
+  }, [filteredSales, productUnitMap]);
+
+  const totalQuantitySold = useMemo(
+    () => saleRows.reduce((sum, r) => sum + r.quantity, 0),
+    [saleRows]
+  );
+
+  const distinctStaffCount = useMemo(
+    () => new Set(saleRows.map((r) => r.staffName)).size,
+    [saleRows]
+  );
+
   // Formatted DD-MMM-YYYY - DD-MMM-YYYY date range label matching the sample PDF (e.g. "23-Oct-2026 - 23-Oct-2026")
   const reportDateRangeDmy = useMemo(
     () => formatReportDateRangeDmy(filteredSales, startDate, endDate, todayYmd),
@@ -314,7 +389,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
     return parts.join(' · ');
   }, [reportDateRangeDmy, selectedStaffObj, paymentFilter]);
 
-  // Export handlers (Staff-aggregated Sales Summary without listing items)
+  // Export handlers (Sales Summary matching exact 8-column format)
   const handleDownloadCsv = () => {
     if (isDownloadingCsv) return;
     setIsDownloadingCsv(true);
@@ -323,9 +398,10 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
         sales: filteredSales,
         business,
         shop,
+        products,
         dateRangeLabel: reportDateRangeDmy,
         symbol,
-        reportType: 'staff_summary',
+        reportType: 'itemized',
         outstandingCreditFallback: shopOutstandingDebtTotal,
       });
       setCsvSuccess(true);
@@ -345,6 +421,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
         sales: filteredSales,
         business,
         shop,
+        products,
         dateRangeLabel: reportDateRangeDmy,
         symbol,
         generatedBy: currentUser.fullName,
@@ -370,6 +447,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
           sales: filteredSales,
           business,
           shop,
+          products,
           dateRangeLabel: reportDateRangeDmy,
           symbol,
           generatedBy: currentUser.fullName,
@@ -382,9 +460,10 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
           sales: filteredSales,
           business,
           shop,
+          products,
           dateRangeLabel: reportDateRangeDmy,
           symbol,
-          reportType: 'staff_summary',
+          reportType: 'itemized',
           outstandingCreditFallback: shopOutstandingDebtTotal,
         });
       }
@@ -756,7 +835,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
           </div>
         </div>
 
-        {/* 3. Main Summary Table (No Items Listed — Aggregated by Staff) */}
+        {/* 3. Main Summary Table (Sales Transactions Aggregated Per Receipt) */}
         <div className="overflow-x-auto pt-2">
           <table className="w-full text-left border-collapse text-xs sm:text-sm min-w-[720px]">
             <thead>
@@ -764,7 +843,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
                 <th className="py-2.5 px-3 text-center w-12">#</th>
                 <th className="py-2.5 px-3">Date &amp; Time</th>
                 <th className="py-2.5 px-3">Product Name</th>
-                <th className="py-2.5 px-3">Product Type</th>
+                <th className="py-2.5 px-3">Unit of Measurement</th>
                 <th className="py-2.5 px-3 text-right">Quantity</th>
                 <th className="py-2.5 px-3 text-right">Amount</th>
                 <th className="py-2.5 px-3 text-center">Payment Method</th>
@@ -772,23 +851,17 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
               </tr>
             </thead>
             <tbody>
-              {reportData.staffRows.length === 0 ? (
+              {saleRows.length === 0 ? (
                 <tr className="bg-slate-50 text-slate-500">
                   <td colSpan={8} className="py-10 text-center text-xs">
                     No sales records found for the selected filter criteria ({activeFilterSummaryLabel}).
                   </td>
                 </tr>
               ) : (
-                reportData.staffRows.map((row, idx) => (
+                saleRows.map((row, idx) => (
                   <tr
-                    key={row.staffId}
-                    onClick={() =>
-                      setStaffFilter((prev) =>
-                        prev === row.staffId ? 'all' : row.staffId
-                      )
-                    }
-                    title="Click to filter by this staff member"
-                    className={`cursor-pointer transition-colors ${
+                    key={row.id || idx}
+                    className={`transition-colors ${
                       idx % 2 === 1 ? 'bg-[#f2f4f7]' : 'bg-white'
                     } hover:bg-emerald-50/60`}
                   >
@@ -798,11 +871,11 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
                     <td className="py-3.5 px-3 text-slate-700 font-mono">
                       {row.dateTime}
                     </td>
-                    <td className="py-3.5 px-3 text-slate-700 font-mono">
+                    <td className="py-3.5 px-3 text-slate-900 font-medium">
                       {row.productName}
                     </td>
                     <td className="py-3.5 px-3 text-slate-700 font-mono">
-                      {row.productType}
+                      {row.unit}
                     </td>
                     <td className="py-3.5 px-3 text-right font-mono tabular-nums text-slate-900">
                       {row.quantity.toLocaleString('en-US')}
@@ -820,7 +893,7 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
                 ))
               )}
             </tbody>
-            {reportData.staffRows.length > 0 && (
+            {saleRows.length > 0 && (
               <tfoot>
                 <tr className="border-t-2 border-slate-300 bg-slate-100 font-bold text-slate-900">
                   <td className="py-3 px-3 text-center">Total</td>
@@ -828,16 +901,16 @@ export const SalesSummaryPage: React.FC<SalesSummaryPageProps> = ({
                   <td className="py-3 px-3 font-mono">--</td>
                   <td className="py-3 px-3 font-mono">--</td>
                   <td className="py-3 px-3 text-right font-mono tabular-nums">
-                    {reportData.totalQuantity.toLocaleString('en-US')}
+                    {totalQuantitySold.toLocaleString('en-US')}
                   </td>
                   <td className="py-3 px-3 text-right font-mono tabular-nums text-emerald-800">
                     {formatCurrency(reportData.totalSales, symbol)}
                   </td>
                   <td className="py-3 px-3 text-center">
-                    {reportData.totalReceiptsCount} receipt{reportData.totalReceiptsCount === 1 ? '' : 's'}
+                    {saleRows.length} receipt{saleRows.length === 1 ? '' : 's'}
                   </td>
                   <td className="py-3 px-3">
-                    {reportData.staffRows.length} staff
+                    {distinctStaffCount} staff
                   </td>
                 </tr>
               </tfoot>

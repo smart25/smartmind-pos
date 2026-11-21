@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+﻿import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Building2,
   Store,
@@ -44,7 +44,6 @@ import { PHASE_1_ARCHITECTURE_STATUS } from '../services/dataServiceContracts';
 import {
   BASE_CURRENCY_CODE,
   canActorResetUserPassword,
-  DEFAULT_DETECTED_PRINTERS,
   DEFAULT_SHOP_PRINTER_SETTINGS,
   formatCurrency,
   getCurrencyOptionByCode,
@@ -54,6 +53,10 @@ import {
   SUPPORTED_CURRENCIES,
 } from '../utils/posCalculations';
 import { UserPasswordModal } from '../components/common/UserPasswordModal';
+import {
+  getCachedOfflineLogo,
+  resolveDocumentIdentity,
+} from '../utils/brandingHierarchy';
 
 interface SettingsPageProps {
   business: Business;
@@ -70,12 +73,18 @@ interface SettingsPageProps {
         | 'name'
         | 'phone'
         | 'taxRatePercent'
+        | 'vatEnabled'
+        | 'printVatOnReceipt'
         | 'receiptHeaderNote'
         | 'receiptFooterNote'
         | 'printerSettings'
       >
     >
   ) => void;
+  onSavePrinterSettings: (
+    shopId: string,
+    settings: ShopPrinterSettings
+  ) => Promise<void>;
   onUpdateBusinessCurrency: (businessId: string, currencyCode: string) => void;
   onUpdateUserPermissions?: (
     userId: string,
@@ -101,6 +110,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   connectivity,
   onChangeConnectivityState,
   onUpdateShopSettings,
+  onSavePrinterSettings,
   onUpdateBusinessCurrency,
   onUpdateUserPermissions,
   onResetUserPassword,
@@ -139,6 +149,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [shopTaxInput, setShopTaxInput] = useState<string>(
     savedDraft?.shopTaxInput ?? activeShop.taxRatePercent.toString()
   );
+  const [vatEnabled, setVatEnabled] = useState<boolean>(() => {
+    if (savedDraft?.vatEnabled !== undefined) {
+      return Boolean(savedDraft.vatEnabled);
+    }
+    return (
+      (activeShop.vatEnabled ?? false) &&
+      (activeShop.taxRatePercent || 0) > 0
+    );
+  });
+  const [printVatOnReceipt, setPrintVatOnReceipt] = useState<boolean>(() => {
+    if (savedDraft?.printVatOnReceipt !== undefined) {
+      return Boolean(savedDraft.printVatOnReceipt);
+    }
+    return activeShop.printVatOnReceipt ?? false;
+  });
   const [shopFooterInput, setShopFooterInput] = useState<string>(
     savedDraft?.shopFooterInput ?? activeShop.receiptFooterNote
   );
@@ -181,11 +206,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     () => getShopPrinterSettings(activeShop)
   );
   const [detectedPrinters, setDetectedPrinters] = useState<PrinterDevice[]>(
-    () => DEFAULT_DETECTED_PRINTERS
-  );
+  []
+);
   const [isScanningPrinters, setIsScanningPrinters] = useState<boolean>(false);
   const [testPrintModalOpen, setTestPrintModalOpen] = useState<boolean>(false);
   const [testPrintCompleted, setTestPrintCompleted] = useState<boolean>(false);
+  const [isPrintingTest, setIsPrintingTest] = useState<boolean>(false);
+  const [testPrintError, setTestPrintError] = useState<string | null>(null);
   const [showAddCustomPrinterModal, setShowAddCustomPrinterModal] =
     useState<boolean>(false);
   const [customPrinterName, setCustomPrinterName] = useState<string>('');
@@ -208,6 +235,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       shopNameInput,
       shopPhoneInput,
       shopTaxInput,
+      vatEnabled,
+      printVatOnReceipt,
       shopFooterInput,
     });
     try {
@@ -226,6 +255,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     shopNameInput,
     shopPhoneInput,
     shopTaxInput,
+    vatEnabled,
+    printVatOnReceipt,
     shopFooterInput,
   ]);
 
@@ -238,73 +269,545 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     [detectedPrinters, printerSettings.defaultPrinterId]
   );
 
-  const handleSavePrinterSettings = (nextSettings?: ShopPrinterSettings) => {
+  const activeModePrinter = useMemo(() => {
+    const printerId =
+      printerSettings.receiptPrinterMode === 'thermal'
+        ? printerSettings.receiptPrinterId
+        : printerSettings.a4PrinterId;
+
+    return detectedPrinters.find((p) => p.id === printerId);
+  }, [
+    detectedPrinters,
+    printerSettings.receiptPrinterMode,
+    printerSettings.receiptPrinterId,
+    printerSettings.a4PrinterId,
+  ]);
+
+    const persistPrinterSettings = async (
+    settings: ShopPrinterSettings,
+    successMessage: string
+  ) => {
+    try {
+      await onSavePrinterSettings(activeShop.id, settings);
+      setPrinterSettings(settings);
+      setSavedBanner(successMessage);
+    } catch (error) {
+      console.error('Failed to save local printer settings:', error);
+      setSavedBanner(
+        error instanceof Error
+          ? `Printer settings were not saved: ${error.message}`
+          : 'Printer settings could not be saved. Please try again.'
+      );
+    }
+  };
+
+  const handleSavePrinterSettings = async (
+    nextSettings?: ShopPrinterSettings
+  ) => {
     const settingsToPersist = nextSettings || printerSettings;
-    setPrinterSettings(settingsToPersist);
-    onUpdateShopSettings(activeShop.id, {
-      printerSettings: settingsToPersist,
-    });
     const targetPrinter =
-      detectedPrinters.find((p) => p.id === settingsToPersist.defaultPrinterId) ||
-      detectedPrinters[0];
-    setSavedBanner(
-      `Printer settings saved for ${activeShop.name}: Default printer set to "${targetPrinter.name}", Mode is ${settingsToPersist.receiptPrinterMode.toUpperCase()}, Receipt Reprint is ${settingsToPersist.allowReceiptReprint ? 'ENABLED' : 'DISABLED'}.`
+      detectedPrinters.find(
+        (p) => p.id === settingsToPersist.defaultPrinterId
+      ) || detectedPrinters[0];
+
+    await persistPrinterSettings(
+      settingsToPersist,
+      `Printer settings saved locally for ${activeShop.name}. Default printer: "${targetPrinter?.name || 'Not selected'}".`
     );
   };
 
-  const handleSelectDefaultPrinter = (printerId: string) => {
-    const targetPrinter = detectedPrinters.find((p) => p.id === printerId);
+  const handleSelectDefaultPrinter = async (printerId: string) => {
+    const targetPrinter = detectedPrinters.find(
+      (p) => p.id === printerId
+    );
+
     const nextSettings: ShopPrinterSettings = {
       ...printerSettings,
       defaultPrinterId: printerId,
+      receiptPrinterId: printerId,
     };
-    setPrinterSettings(nextSettings);
-    onUpdateShopSettings(activeShop.id, {
-      printerSettings: nextSettings,
-    });
-    setSavedBanner(
-      `Default printer updated to "${targetPrinter?.name || printerId}" for ${activeShop.name}.`
+
+    await persistPrinterSettings(
+      nextSettings,
+      `Receipt printer updated to "${targetPrinter?.name || printerId}" for ${activeShop.name}.`
     );
   };
 
-  const handleSelectReceiptPrinterMode = (mode: ReceiptPrinterMode) => {
+  const handleSelectReceiptPrinter = async (printerId: string) => {
+    const nextSettings: ShopPrinterSettings = {
+      ...printerSettings,
+      receiptPrinterId: printerId,
+      defaultPrinterId: printerId,
+    };
+
+    const target = detectedPrinters.find((p) => p.id === printerId);
+
+    await persistPrinterSettings(
+      nextSettings,
+      `Receipt printer assigned to "${target?.name || 'Not selected'}" on this computer.`
+    );
+  };
+
+  const handleSelectA4Printer = async (printerId: string) => {
+    const nextSettings: ShopPrinterSettings = {
+      ...printerSettings,
+      a4PrinterId: printerId,
+    };
+
+    const target = detectedPrinters.find((p) => p.id === printerId);
+
+    await persistPrinterSettings(
+      nextSettings,
+      `A4 printer assigned to "${target?.name || 'Not selected'}" on this computer.`
+    );
+  };
+
+  const handleSelectReceiptPrinterMode = async (
+    mode: ReceiptPrinterMode
+  ) => {
     const nextSettings: ShopPrinterSettings = {
       ...printerSettings,
       receiptPrinterMode: mode,
     };
-    setPrinterSettings(nextSettings);
-    onUpdateShopSettings(activeShop.id, {
-      printerSettings: nextSettings,
-    });
-    setSavedBanner(
-      `Receipt printer mode set to ${mode === 'thermal' ? `Thermal Roll (${nextSettings.thermalPaperWidth})` : 'A4 Full-Page Document'} for ${activeShop.name}.`
+
+    await persistPrinterSettings(
+      nextSettings,
+      `Receipt printer mode set to ${
+        mode === 'thermal'
+          ? `Thermal Roll (${nextSettings.thermalPaperWidth})`
+          : 'A4 Full-Page Document'
+      } for ${activeShop.name}.`
     );
   };
 
-  const handleToggleReceiptReprint = (enabled: boolean) => {
+  const handleToggleReceiptReprint = async (enabled: boolean) => {
     const nextSettings: ShopPrinterSettings = {
       ...printerSettings,
       allowReceiptReprint: enabled,
     };
-    setPrinterSettings(nextSettings);
-    onUpdateShopSettings(activeShop.id, {
-      printerSettings: nextSettings,
-    });
-    setSavedBanner(
-      `Receipt reprint ${enabled ? 'ENABLED (Reprints allowed with DUPLICATE watermark)' : 'DISABLED (Reprinting locked in Sales History)'} for ${activeShop.name}.`
+
+    await persistPrinterSettings(
+      nextSettings,
+      `Receipt reprint ${enabled ? 'ENABLED' : 'DISABLED'} for ${activeShop.name}.`
     );
   };
 
-  const handleRescanPrinters = () => {
-    setIsScanningPrinters(true);
-    setTimeout(() => {
-      setIsScanningPrinters(false);
-      setSavedBanner(
-        `System spooler scan complete: ${detectedPrinters.length} hardware and network printers verified on terminal ${activeShop.terminalId}.`
-      );
-    }, 550);
-  };
+          const handleRescanPrinters = useCallback(async () => {
+    const getPrinters = window.smartmindDesktopApi?.getPrinters;
 
+    if (!getPrinters) {
+      setDetectedPrinters([]);
+      setSavedBanner(
+        'Printer discovery requires the installed SmartMind Windows desktop application.'
+      );
+      return;
+    }
+
+    setIsScanningPrinters(true);
+
+    try {
+      const windowsPrinters = await getPrinters();
+
+      const mappedPrinters: PrinterDevice[] = windowsPrinters.map(
+        (printer) => ({
+          id: printer.name,
+          name: printer.displayName || printer.name,
+          driverName: printer.description || undefined,
+          type: 'unknown',
+          connection: 'system_spooler',
+          status: 'unknown',
+          paperFormats: [],
+        })
+      );
+
+      setDetectedPrinters(mappedPrinters);
+      setSavedBanner(
+        `Windows printer scan complete. ${mappedPrinters.length} installed printer(s) found on this computer.`
+      );
+    } catch (error) {
+      console.error('Windows printer discovery failed:', error);
+      setSavedBanner(
+        error instanceof Error
+          ? `Printer discovery failed: ${error.message}`
+          : 'Could not discover Windows printers. Please try again.'
+      );
+        } finally {
+      setIsScanningPrinters(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'printer') {
+      void handleRescanPrinters();
+    }
+  }, [activeTab, handleRescanPrinters]);
+
+  const handleSendTestPrint = async () => {
+    setTestPrintCompleted(false);
+    setTestPrintError(null);
+
+    const isThermal = printerSettings.receiptPrinterMode === 'thermal';
+    const printerId = isThermal
+      ? printerSettings.receiptPrinterId
+      : printerSettings.a4PrinterId;
+
+    if (!printerId) {
+      setTestPrintError(
+        isThermal
+          ? 'Please assign a receipt printer before testing.'
+          : 'Please assign an A4 printer before testing.'
+      );
+      return;
+    }
+
+    const printDocument = window.smartmindDesktopApi?.printDocument;
+
+    if (!printDocument) {
+      setTestPrintError(
+        'Native printing is only available in the SmartMind Windows desktop application.'
+      );
+      return;
+    }
+
+    const selectedPrinter = detectedPrinters.find(
+      (printer) => printer.id === printerId
+    );
+
+    if (!selectedPrinter) {
+      setTestPrintError(
+        'The assigned printer is not in the current Windows printer list. Please rescan and reassign it.'
+      );
+      return;
+    }
+
+    const escapeHtml = (value: string) =>
+      value.replace(/[&<>"']/g, (character) => {
+        const entities: Record<string, string> = {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;',
+        };
+        return entities[character];
+      });
+
+    const shopName = escapeHtml(activeShop.name || '');
+    const shopAddress = escapeHtml(activeShop.address || '');
+    const shopPhone = escapeHtml(activeShop.phone || '');
+    const businessName = escapeHtml(business.name || '');
+    const currency = escapeHtml(activeCurrencyOption.symbol || '');
+    const footer = escapeHtml(activeShop.receiptFooterNote || 'Thank you');
+    // Resolve tenant branding using the established business/shop hierarchy.
+    const documentIdentity = resolveDocumentIdentity(business, activeShop);
+
+    // Prefer a cached data URL for offline printing.
+    const cachedShopLogo = getCachedOfflineLogo(business.id, activeShop.id);
+    const cachedBusinessLogo = getCachedOfflineLogo(business.id);
+
+    const logoCandidates = [
+      cachedShopLogo,
+      documentIdentity.logoUrl,
+      cachedBusinessLogo,
+    ].filter((value): value is string => Boolean(value?.trim()));
+
+    const localLogo = logoCandidates.find((value) =>
+      /^data:image\/(png|jpeg|webp);base64,/i.test(value)
+    );
+
+    let printLogoDataUrl = localLogo || '';
+
+    // Convert an HTTPS logo into an embedded image where possible.
+    if (!printLogoDataUrl) {
+      const remoteLogo = logoCandidates.find((value) => {
+        try {
+          return new URL(value).protocol === 'https:';
+        } catch {
+          return false;
+        }
+      });
+
+      if (remoteLogo) {
+        try {
+          const response = await fetch(remoteLogo, {
+            credentials: 'omit',
+          });
+
+          if (!response.ok) {
+            throw new Error('Logo download failed.');
+          }
+
+          const blob = await response.blob();
+          const allowedTypes = [
+            'image/png',
+            'image/jpeg',
+            'image/webp',
+          ];
+
+          if (
+            !allowedTypes.includes(blob.type.toLowerCase()) ||
+            blob.size > 512 * 1024
+          ) {
+            throw new Error('Logo format or size is not supported.');
+          }
+
+          printLogoDataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onload = () =>
+              typeof reader.result === 'string'
+                ? resolve(reader.result)
+                : reject(new Error('Could not read logo image.'));
+
+            reader.onerror = () =>
+              reject(new Error('Could not convert logo image.'));
+
+            reader.readAsDataURL(blob);
+          });
+        } catch (error) {
+          console.warn(
+            'A4 print logo unavailable; using text branding:',
+            error
+          );
+        }
+      }
+    }
+
+    const logoMarkup = printLogoDataUrl
+      ? `<img class="business-logo" src="${escapeHtml(printLogoDataUrl)}" alt="Business logo">`
+      : '';
+
+    const a4BusinessName = escapeHtml(documentIdentity.businessName);
+    const a4LegalName = escapeHtml(documentIdentity.legalName || '');
+    const a4BusinessAddress = escapeHtml(documentIdentity.businessAddress || '');
+    const a4BusinessPhone = escapeHtml(documentIdentity.businessPhone || '');
+    const a4BusinessEmail = escapeHtml(documentIdentity.businessEmail || '');
+    const a4ShopName = escapeHtml(documentIdentity.shopName || '');
+    const a4ShopAddress = escapeHtml(
+      [documentIdentity.shopAddress, documentIdentity.shopCity]
+        .filter(Boolean)
+        .join(', ')
+    );
+    const a4ShopPhone = escapeHtml(documentIdentity.shopPhone || '');
+    const html = isThermal
+      ? `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { margin: 3mm; }
+  body {
+    width: 70mm;
+    margin: 0 auto;
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    color: #000;
+  }
+  .center { text-align: center; }
+  .bold { font-weight: bold; }
+  .line { border-top: 1px dashed #000; margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 3px 0; }
+  .right { text-align: right; }
+  .total { font-size: 13px; font-weight: bold; }
+</style>
+</head>
+<body>
+  <div class="center bold">${shopName}</div>
+  <div class="center">${shopAddress}</div>
+  <div class="center">Tel: ${shopPhone}</div>
+  <div class="line"></div>
+  <div class="center bold">TEST PRINT RECEIPT</div>
+  <div>Reference: TEST-PRINT-001</div>
+  <div class="line"></div>
+  <table>
+    <tr><td>Sample Retail Item A</td><td class="right">2,500</td></tr>
+    <tr><td>Sample POS Item B</td><td class="right">3,000</td></tr>
+  </table>
+  <div class="line"></div>
+  <table>
+    <tr class="total"><td>TOTAL</td><td class="right">${currency} 5,500</td></tr>
+  </table>
+  <div class="line"></div>
+  <div class="center">${footer}</div>
+  <div class="center">TEST DOCUMENT - NOT A SALE</div>
+</body>
+</html>`
+        : `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @page {
+    size: A4;
+    margin: 20mm;
+  }
+
+  body {
+    font-family: Arial, sans-serif;
+    color: #222;
+    font-size: 12px;
+  }
+
+  .business-header {
+    text-align: center;
+    margin-bottom: 22px;
+  }
+
+  .business-logo {
+    display: block;
+    max-width: 145px;
+    max-height: 85px;
+    object-fit: contain;
+    margin: 0 auto 12px;
+  }
+
+  .business-name {
+    font-size: 21px;
+    font-weight: bold;
+    margin: 0 0 5px;
+  }
+
+  .legal-name {
+    font-size: 12px;
+    margin: 0 0 7px;
+  }
+
+  .business-details {
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .branch-details {
+    text-align: left;
+    border-top: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+    padding: 10px 0;
+    margin: 18px 0;
+  }
+
+  .document-title {
+    text-align: center;
+    margin-top: 24px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 25px;
+  }
+
+  th, td {
+    border: 1px solid #ccc;
+    padding: 10px;
+    text-align: left;
+  }
+
+  .total {
+    font-weight: bold;
+  }
+
+  .test-footer {
+    text-align: center;
+    margin-top: 40px;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+
+  <header class="business-header">
+    ${logoMarkup}
+    <h1 class="business-name">${a4BusinessName}</h1>
+
+    ${a4LegalName
+      ? `<p class="legal-name">${a4LegalName}</p>`
+      : ''}
+
+    <p class="business-details">
+      ${a4BusinessAddress ? `${a4BusinessAddress}<br>` : ''}
+      ${a4BusinessPhone ? `Tel: ${a4BusinessPhone}<br>` : ''}
+      ${a4BusinessEmail ? `Email: ${a4BusinessEmail}` : ''}
+    </p>
+  </header>
+
+  <section class="branch-details">
+    <strong>Branch:</strong> ${a4ShopName}<br>
+    ${a4ShopAddress ? `<strong>Address:</strong> ${a4ShopAddress}<br>` : ''}
+    ${a4ShopPhone ? `<strong>Phone:</strong> ${a4ShopPhone}` : ''}
+  </section>
+
+  <h2 class="document-title">A4 PRINTER TEST</h2>
+  <p>Reference: TEST-A4-001</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th>Qty</th>
+        <th>Unit Price</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Sample Wholesale Carton Item</td>
+        <td>1</td>
+        <td>${currency} 2,500</td>
+        <td>${currency} 2,500</td>
+      </tr>
+      <tr>
+        <td>Sample Store Pack</td>
+        <td>2</td>
+        <td>${currency} 1,500</td>
+        <td>${currency} 3,000</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr class="total">
+        <td colspan="3">Grand Total</td>
+        <td>${currency} 5,500</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <p class="test-footer">TEST DOCUMENT - NOT A SALE</p>
+
+</body>
+</html>`;
+
+    setIsPrintingTest(true);
+
+    try {
+      const result = await printDocument({
+        printerName: printerId,
+        format: isThermal
+          ? printerSettings.thermalPaperWidth === '58mm'
+            ? 'thermal-58mm'
+            : 'thermal-80mm'
+          : 'A4',
+        html,
+        copies: 1,
+      });
+
+      if (!result.success) {
+        throw new Error(
+          result.failureReason || 'Windows did not accept the print job.'
+        );
+      }
+
+      setTestPrintCompleted(true);
+    } catch (error) {
+      console.error('Native test printing failed:', error);
+      setTestPrintError(
+        error instanceof Error
+          ? error.message
+          : 'The test print could not be completed.'
+      );
+    } finally {
+      setIsPrintingTest(false);
+    }
+  };
   const handleAddCustomPrinter = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customPrinterName.trim()) return;
@@ -351,16 +854,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   const handleSaveShopForm = (e: React.FormEvent) => {
     e.preventDefault();
+    const parsedTax = parseFloat(shopTaxInput) || 0;
+    const finalTaxRate = vatEnabled ? Math.max(0, parsedTax) : 0;
     onUpdateShopSettings(activeShop.id, {
       name: shopNameInput.trim() || activeShop.name,
       phone: shopPhoneInput.trim() || activeShop.phone,
-      taxRatePercent: parseFloat(shopTaxInput) || 0,
+      taxRatePercent: finalTaxRate,
+      vatEnabled,
+      printVatOnReceipt: vatEnabled ? printVatOnReceipt : false,
       receiptFooterNote: shopFooterInput.trim(),
     });
     const option = getCurrencyOptionByCode(selectedCurrencyCode);
     onUpdateBusinessCurrency(business.id, option.code);
     setSavedBanner(
-      `Updated parameters for ${activeShop.code} and set currency to ${option.name} (${option.symbol.trim()}).`
+      `Updated parameters for ${activeShop.code} (VAT: ${vatEnabled ? `${finalTaxRate}%` : 'Disabled'}, Receipt display: ${vatEnabled && printVatOnReceipt ? 'ON' : 'OFF'}) and set currency to ${option.name} (${option.symbol.trim()}).`
     );
   };
 
@@ -715,22 +1222,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 </div>
                 <div>
                   <label
-                    htmlFor="set-shop-tax"
-                    className="block font-semibold text-slate-700 mb-1"
-                  >
-                    Shop VAT / Tax Rate (%)
-                  </label>
-                  <input
-                    id="set-shop-tax"
-                    type="number"
-                    step="0.1"
-                    value={shopTaxInput}
-                    onChange={(e) => setShopTaxInput(e.target.value)}
-                    className="w-full px-3 py-2 font-mono tabular-nums border border-slate-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label
                     htmlFor="set-shop-currency"
                     className="block font-semibold text-slate-700 mb-1"
                   >
@@ -750,7 +1241,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     ))}
                   </select>
                 </div>
-                <div className="md:col-span-2">
+                <div>
                   <label
                     htmlFor="set-shop-footer"
                     className="block font-semibold text-slate-700 mb-1"
@@ -764,6 +1255,136 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     onChange={(e) => setShopFooterInput(e.target.value)}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                   />
+                </div>
+
+                {/* VAT Configuration & Receipt Display Controls */}
+                <div className="md:col-span-2 p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-800 text-sm">
+                          Shop VAT / Tax Calculation
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                            vatEnabled
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {vatEnabled ? 'VAT Enabled' : 'VAT Disabled (0%)'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {vatEnabled
+                          ? 'VAT is computed on sales transactions and added to the payable total.'
+                          : 'VAT is completely disabled. No tax is added to sales or customer totals.'}
+                      </p>
+                    </div>
+
+                    {/* Enable / Disable VAT Toggle Buttons */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVatEnabled(false);
+                          setPrintVatOnReceipt(false);
+                        }}
+                        className={`px-3.5 py-1.5 rounded-lg font-semibold text-xs transition-colors cursor-pointer ${
+                          !vatEnabled
+                            ? 'bg-rose-600 text-white shadow-xs'
+                            : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        Disable VAT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVatEnabled(true);
+                          if ((parseFloat(shopTaxInput) || 0) <= 0) {
+                            setShopTaxInput('7.5');
+                          }
+                        }}
+                        className={`px-3.5 py-1.5 rounded-lg font-semibold text-xs transition-colors cursor-pointer ${
+                          vatEnabled
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        Enable VAT
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label
+                        htmlFor="set-shop-tax"
+                        className="block font-semibold text-slate-700 mb-1"
+                      >
+                        Shop VAT / Tax Rate (%)
+                      </label>
+                      <input
+                        id="set-shop-tax"
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        disabled={!vatEnabled}
+                        value={vatEnabled ? shopTaxInput : '0'}
+                        onChange={(e) => setShopTaxInput(e.target.value)}
+                        className={`w-full px-3 py-2 font-mono tabular-nums border rounded-lg ${
+                          vatEnabled
+                            ? 'border-slate-300 bg-white text-slate-900'
+                            : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                        }`}
+                        placeholder="0.0"
+                      />
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        {vatEnabled
+                          ? 'Standard Nigerian VAT benchmark is 7.5%.'
+                          : 'VAT rate is locked at 0% while VAT is disabled.'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <span className="block font-semibold text-slate-700 mb-1">
+                        Receipt VAT Line Display
+                      </span>
+                      <div className="flex items-center justify-between p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="pr-2">
+                          <p className="font-semibold text-slate-800 text-xs">
+                            Appear on Printed Receipt
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            {vatEnabled && printVatOnReceipt
+                              ? 'VAT amount will appear on printed thermal & A4 receipts'
+                              : 'VAT line is hidden and completely removed from receipts'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!vatEnabled}
+                          onClick={() => setPrintVatOnReceipt((prev) => !prev)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            !vatEnabled
+                              ? 'bg-slate-200 cursor-not-allowed opacity-50'
+                              : printVatOnReceipt
+                                ? 'bg-emerald-600'
+                                : 'bg-slate-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                              vatEnabled && printVatOnReceipt
+                                ? 'translate-x-5'
+                                : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -818,7 +1439,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   type="submit"
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg cursor-pointer"
                 >
-                  Save Shop Parameters (Demo)
+                  Save Shop Parameters
                 </button>
                 {business.currencyCode !== BASE_CURRENCY_CODE && (
                   <button
@@ -919,7 +1540,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <p className="text-[11px] text-slate-500 mt-0.5">
                       {printerSettings.receiptPrinterMode === 'thermal'
                         ? `Auto-Cut: ${printerSettings.autoCutReceipt ? 'On' : 'Off'} · Cash Drawer: ${printerSettings.openCashDrawerOnPrint ? 'On' : 'Off'}`
-                        : 'Standard 210 × 297mm Full Tax Invoice'}
+                        : 'Standard 210 Ã— 297mm Full Tax Invoice'}
                     </p>
                   </div>
                 </div>
@@ -962,147 +1583,176 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 </div>
               </div>
 
-              {/* SECTION 1: AUTO-DETECTED SYSTEM PRINTERS & DEFAULT SELECTION */}
+                           {/* SECTION 1: COMPUTER-LOCAL PRINTER ASSIGNMENTS */}
               <div className="p-4 sm:p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-display font-bold text-slate-900">
-                        1. Detected System Printers (Select Default Printer)
-                      </h3>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-semibold">
-                        <Radio className="w-3 h-3 text-emerald-600" />
-                        <span>Auto-Detected on {activeShop.terminalId}</span>
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-600 mt-0.5">
-                      All printers installed on this system (USB, Network LAN, and System Spooler) are listed below. Select which printer will serve as the default for POS checkout receipts.
+                    <h3 className="text-sm font-display font-bold text-slate-900">
+                      1. Installed Printers & Assignments
+                    </h3>
+                    <p className="text-xs text-slate-600 mt-1">
+                      Printers installed in Windows on this computer. Assign
+                      one printer for sales receipts and another for A4
+                      invoices and reports. These assignments are saved locally
+                      on this computer.
                     </p>
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => setShowAddCustomPrinterModal(true)}
-                    className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold flex items-center gap-1.5 self-start sm:self-auto cursor-pointer shrink-0"
+                    onClick={handleRescanPrinters}
+                    disabled={isScanningPrinters}
+                    className="px-3 py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 text-slate-700 font-semibold flex items-center gap-2 self-start cursor-pointer shrink-0"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Network / Manual Printer</span>
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${
+                        isScanningPrinters ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>
+                      {isScanningPrinters ? 'Scanning...' : 'Rescan Windows Printers'}
+                    </span>
                   </button>
                 </div>
 
-                {/* Dropdown selector for quick default selection */}
-                <div className="p-3.5 rounded-lg bg-white border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="p-3.5 rounded-lg bg-white border border-slate-200 space-y-2">
                     <label
-                      htmlFor="default-printer-select"
+                      htmlFor="receipt-printer-select"
                       className="block font-semibold text-slate-800 text-xs"
                     >
-                      Quick Select Default System Printer
+                      Receipt Printer
                     </label>
-                    <span className="text-[11px] text-slate-500">
-                      Automatically routes all POS checkout receipts and drawer triggers to this device
-                    </span>
+                    <p className="text-[11px] text-slate-500">
+                      Used for sales receipts, refunds and receipt reprints.
+                    </p>
+                    <select
+                      id="receipt-printer-select"
+                      value={printerSettings.receiptPrinterId || ''}
+                      onChange={(e) =>
+                        handleSelectReceiptPrinter(e.target.value)
+                      }
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-semibold text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                    >
+                      <option value="">Select receipt printer</option>
+                      {detectedPrinters.map((prn) => (
+                        <option key={prn.id} value={prn.id}>
+                          {prn.name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <select
-                    id="default-printer-select"
-                    value={printerSettings.defaultPrinterId}
-                    onChange={(e) => handleSelectDefaultPrinter(e.target.value)}
-                    className="sm:w-80 px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-semibold text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
-                  >
-                    {detectedPrinters.map((prn) => (
-                      <option key={prn.id} value={prn.id}>
-                        {prn.name} [{prn.type === 'thermal' ? 'Thermal' : prn.type === 'laser_inkjet' ? 'A4 Office' : 'Virtual PDF'}]
-                      </option>
-                    ))}
-                  </select>
+
+                  <div className="p-3.5 rounded-lg bg-white border border-slate-200 space-y-2">
+                    <label
+                      htmlFor="a4-printer-select"
+                      className="block font-semibold text-slate-800 text-xs"
+                    >
+                      A4 Document Printer
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Used for A4 invoices, reports and other full-page
+                      documents.
+                    </p>
+                    <select
+                      id="a4-printer-select"
+                      value={printerSettings.a4PrinterId || ''}
+                      onChange={(e) => handleSelectA4Printer(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-semibold text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-600 cursor-pointer"
+                    >
+                      <option value="">Select A4 printer</option>
+                      {detectedPrinters.map((prn) => (
+                        <option key={prn.id} value={prn.id}>
+                          {prn.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                {/* Printer Device Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {detectedPrinters.map((prn) => {
-                    const isDefault =
-                      printerSettings.defaultPrinterId === prn.id;
-                    return (
-                      <div
-                        key={prn.id}
-                        onClick={() => handleSelectDefaultPrinter(prn.id)}
-                        className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
-                          isDefault
-                            ? 'bg-white border-emerald-600 ring-2 ring-emerald-600/15 shadow-xs'
-                            : 'bg-white border-slate-200 hover:border-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2.5">
-                          <div className="flex items-start gap-2.5 min-w-0">
-                            <div
-                              className={`p-2 rounded-lg shrink-0 mt-0.5 ${
-                                isDefault
-                                  ? 'bg-emerald-600 text-white'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
+                <div className="flex flex-wrap gap-3 text-[11px] text-slate-600">
+                  <span>
+                    Receipt assignment:{' '}
+                    <strong>
+                      {printerSettings.receiptPrinterId
+                        ? 'Selected'
+                        : 'Not configured'}
+                    </strong>
+                  </span>
+                  <span>
+                    A4 assignment:{' '}
+                    <strong>
+                      {printerSettings.a4PrinterId
+                        ? 'Selected'
+                        : 'Not configured'}
+                    </strong>
+                  </span>
+                </div>
+
+                <div className="border-t border-slate-200 pt-3">
+                  <h4 className="text-xs font-semibold text-slate-800 mb-2">
+                    Printers discovered by Windows
+                  </h4>
+
+                  {detectedPrinters.length === 0 ? (
+                    <div className="p-4 rounded-lg bg-white border border-dashed border-slate-300 text-center">
+                      <Printer className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                      <p className="text-xs font-semibold text-slate-700">
+                        No printers discovered yet
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Connect and install your printer in Windows, then
+                        rescan.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {detectedPrinters.map((prn) => {
+                        const isReceiptPrinter =
+                          printerSettings.receiptPrinterId === prn.id;
+                        const isA4Printer =
+                          printerSettings.a4PrinterId === prn.id;
+
+                        return (
+                          <div
+                            key={prn.id}
+                            className="p-3.5 rounded-xl bg-white border border-slate-200 flex items-start gap-3"
+                          >
+                            <div className="p-2 rounded-lg bg-slate-100 text-slate-700 shrink-0">
                               <Printer className="w-4 h-4" />
                             </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <p className="font-bold text-slate-900 truncate">
-                                  {prn.name}
-                                </p>
-                                {isDefault && (
-                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px] uppercase tracking-wider">
-                                    Default Printer
+
+                            <div className="min-w-0 flex-1">
+                              <p className="font-bold text-slate-900 text-xs break-words">
+                                {prn.name}
+                              </p>
+                              <p className="text-[11px] text-slate-500 mt-1 break-words">
+                                {prn.driverName || 'Windows printer'}
+                              </p>
+
+                              <div className="flex flex-wrap gap-1.5 mt-2">
+                                {isReceiptPrinter && (
+                                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                                    Receipt printer
+                                  </span>
+                                )}
+                                {isA4Printer && (
+                                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[10px] font-semibold">
+                                    A4 printer
+                                  </span>
+                                )}
+                                {!isReceiptPrinter && !isA4Printer && (
+                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold">
+                                    Not assigned
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[11px] text-slate-500 mt-0.5">
-                                Driver: {prn.driverName || 'System Spooler Driver'}
-                              </p>
-                              <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px]">
-                                  {prn.connection === 'network' ? (
-                                    <Wifi className="w-3 h-3 text-slate-500" />
-                                  ) : (
-                                    <Usb className="w-3 h-3 text-slate-500" />
-                                  )}
-                                  <span className="uppercase">
-                                    {prn.connection.replace('_', ' ')}
-                                  </span>
-                                  {prn.ipAddress ? ` (${prn.ipAddress})` : ''}
-                                </span>
-                                {prn.paperFormats.map((fmt) => (
-                                  <span
-                                    key={fmt}
-                                    className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono uppercase text-[10px] font-semibold"
-                                  >
-                                    {fmt}
-                                  </span>
-                                ))}
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold text-[10px]">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                                  <span className="capitalize">{prn.status}</span>
-                                </span>
-                              </div>
                             </div>
                           </div>
-
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSelectDefaultPrinter(prn.id);
-                            }}
-                            className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold shrink-0 cursor-pointer ${
-                              isDefault
-                                ? 'bg-emerald-600 text-white'
-                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                            }`}
-                          >
-                            {isDefault ? 'Default Selected' : 'Set as Default'}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1243,6 +1893,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4 cursor-pointer"
                         />
                       </label>
+
+                      <label className="flex items-center justify-between gap-2 cursor-pointer">
+                        <span className="text-slate-700">
+                          Auto-Print Receipt Upon Checkout
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={printerSettings.autoPrintOnSale ?? false}
+                          onChange={(e) => {
+                            const next: ShopPrinterSettings = {
+                              ...printerSettings,
+                              autoPrintOnSale: e.target.checked,
+                            };
+                            handleSavePrinterSettings(next);
+                          }}
+                          className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4 cursor-pointer"
+                        />
+                      </label>
                     </div>
                   </div>
 
@@ -1280,7 +1948,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                               A4 Printer Mode
                             </h4>
                             <span className="text-[11px] text-slate-500">
-                              Full-Sheet Standard Document (210 × 297mm)
+                              Full-Sheet Standard Document (210 Ã— 297mm)
                             </span>
                           </div>
                         </div>
@@ -1309,7 +1977,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       <div className="flex items-center justify-between">
                         <span>Paper Size Standard:</span>
                         <span className="font-mono font-semibold text-slate-900">
-                          ISO A4 (210 × 297 mm)
+                          ISO A4 (210 Ã— 297 mm)
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
@@ -2018,13 +2686,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 </p>
               </div>
 
-              <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-1">
-                <p className="font-semibold">
-                  Phase 1 Architectural Status: Prototype Simulation Mode
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 space-y-1">
+                <p className="font-semibold text-slate-900">
+                  Multi-Shop Cloud Synchronization Engine
                 </p>
-                <p>
-                  {PHASE_1_ARCHITECTURE_STATUS.localDatabase} ·{' '}
-                  {PHASE_1_ARCHITECTURE_STATUS.cloudBackend}
+                <p className="text-slate-600">
+                  Active Cloud Sync · Live Firestore &amp; Offline SQLite Engine
                 </p>
               </div>
 
@@ -2413,7 +3080,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     Test Print Preview ({printerSettings.receiptPrinterMode.toUpperCase()} Mode)
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Target Printer: {activeDefaultPrinter?.name}
+                    Target Printer: {activeModePrinter?.name}
                   </p>
                 </div>
               </div>
@@ -2451,7 +3118,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <div className="flex justify-between">
                       <span>Printer:</span>
                       <span className="font-bold truncate max-w-[160px]">
-                        {activeDefaultPrinter?.name}
+                        {activeModePrinter?.name}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -2564,7 +3231,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
                   <div className="border-t border-slate-200 pt-3 flex justify-between items-end">
                     <div className="text-[10px] text-slate-500 space-y-1">
-                      <p>Default Printer: {activeDefaultPrinter?.name}</p>
+                      <p>Default Printer: {activeModePrinter?.name}</p>
                       <p>Customer Signature: _______________________</p>
                     </div>
                     <div className="text-right">
@@ -2585,7 +3252,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
                   Test receipt dispatched to{' '}
-                  <strong>{activeDefaultPrinter?.name}</strong> in{' '}
+                  <strong>{activeModePrinter?.name}</strong> in{' '}
                   {printerSettings.receiptPrinterMode.toUpperCase()} format.
                 </span>
               </div>
@@ -2599,23 +3266,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               >
                 Close Preview
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTestPrintCompleted(true);
-                  if (typeof window !== 'undefined' && window.print) {
-                    try {
-                      window.print();
-                    } catch {
-                      // Ignore print dialog cancellation
-                    }
-                  }
-                }}
-                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span>Send Test Job to Default Printer</span>
-              </button>
+             <button
+  type="button"
+  onClick={handleSendTestPrint}
+  disabled={isPrintingTest}
+  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
+>
+  <Printer className="w-3.5 h-3.5" />
+  <span>
+    {isPrintingTest ? 'Sending Test Print...' : 'Send Test Print'}
+  </span>
+</button>
             </div>
           </div>
         </div>

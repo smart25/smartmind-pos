@@ -19,9 +19,11 @@ import {
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
+  CalendarClock,
 } from 'lucide-react';
 import { AppView, Shop, User } from '../../types/pos';
 import { canUserAccessView } from '../../utils/posCalculations';
+import { APP_VERSION } from '../../constants/version';
 
 interface SidebarProps {
   activeView: AppView;
@@ -34,6 +36,7 @@ interface SidebarProps {
   onSignOut: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
+  supportMode?: boolean;
 }
 
 interface NavSubItemConfig {
@@ -68,7 +71,32 @@ const NAV_ITEMS: NavItemConfig[] = [
     id: 'inventory',
     label: 'Products & Inventory',
     icon: Package,
-    isVisible: (u) => canUserAccessView(u, 'inventory'),
+    isVisible: (u) =>
+      canUserAccessView(u, 'inventory') ||
+      canUserAccessView(u, 'product_transfer') ||
+      canUserAccessView(u, 'expiring_products'),
+    subItems: [
+      {
+        id: 'inventory',
+        label: 'Products Catalogue',
+        icon: Package,
+        isVisible: (u) => canUserAccessView(u, 'inventory'),
+      },
+      {
+        id: 'product_transfer',
+        label: 'Product Transfer',
+        icon: ArrowLeftRight,
+        isVisible: (u) => canUserAccessView(u, 'product_transfer'),
+      },
+      {
+        id: 'expiring_products',
+        label: 'Expiring Products',
+        icon: CalendarClock,
+        isVisible: (u) =>
+          canUserAccessView(u, 'expiring_products') ||
+          canUserAccessView(u, 'inventory'),
+      },
+    ],
   },
   {
     id: 'invoices',
@@ -146,13 +174,47 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSignOut,
   mobileOpen,
   onCloseMobile,
+  supportMode = false,
 }) => {
-  const visibleNavItems = NAV_ITEMS.filter((item) =>
-    item.isVisible(currentUser)
-  );
+  const visibleNavItems = supportMode
+    ? NAV_ITEMS.filter((item) =>
+        [
+          'dashboard',
+          'pos',
+          'inventory',
+          'invoices',
+          'sales',
+          'debt_book',
+          'reports',
+          'suppliers',
+          'shops',
+          'staff',
+          'settings',
+        ].includes(item.id)
+      ).map((item) => {
+        if (item.id === 'sales') {
+          return {
+            ...item,
+            subItems: item.subItems?.filter((sub) =>
+              ['sales', 'sales_summary'].includes(sub.id)
+            ),
+          };
+        }
+        if (item.id === 'inventory') {
+          return {
+            ...item,
+            subItems: item.subItems?.filter((sub) =>
+              ['inventory', 'product_transfer', 'expiring_products'].includes(sub.id)
+            ),
+          };
+        }
+        return item;
+      })
+    : NAV_ITEMS.filter((item) => item.isVisible(currentUser));
 
   const [openSubMenus, setOpenSubMenus] = useState<Record<string, boolean>>({
     sales: true,
+    inventory: true,
   });
 
   const toggleSubMenu = (menuId: string) => {
@@ -177,11 +239,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
             {!isCompact && (
               <div className="min-w-0">
-                <p className="font-display font-bold text-sm text-white tracking-tight truncate">
-                  SmartMind POS
-                </p>
+                <div className="flex items-center gap-1.5">
+                  <p className="font-display font-bold text-sm text-white tracking-tight truncate">
+                    SmartMind POS
+                  </p>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60 leading-none">
+                    v{APP_VERSION}
+                  </span>
+                </div>
                 <p className="text-xs text-slate-400 truncate">
-                  Desktop Edition Â· Phase 2
+                  Multi-Shop Cloud POS
                 </p>
               </div>
             )}
@@ -250,10 +317,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onReturnToShopSelection();
                   if (isMobileDrawer) onCloseMobile();
                 }}
-                className="mt-2.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-slate-900/90 hover:bg-slate-950 text-xs font-medium text-slate-200 border border-slate-700/80 transition-colors whitespace-nowrap"
+                className={`mt-2.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+                  supportMode
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-sm'
+                    : 'bg-slate-900/90 hover:bg-slate-950 text-slate-200 border border-slate-700/80'
+                }`}
               >
-                <ArrowLeftRight className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span>Switch Shop Workspace</span>
+                {supportMode ? (
+                  <>
+                    <LogOut className="w-3.5 h-3.5 text-slate-950 shrink-0" />
+                    <span>Exit Shop to Admin Console</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowLeftRight className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>Switch Shop Workspace</span>
+                  </>
+                )}
               </button>
             </div>
           )}
@@ -422,14 +502,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             type="button"
             onClick={onSignOut}
-            aria-label="Sign Out of Demo Session"
-            title={isCompact ? 'Sign Out (Demo)' : undefined}
+            aria-label="Sign Out"
+            title={isCompact ? 'Sign Out' : undefined}
             className={`w-full flex items-center ${
               isCompact ? 'justify-center px-2' : 'gap-2.5 px-3'
-            } py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors whitespace-nowrap`}
+            } py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer`}
           >
             <LogOut className="w-4 h-4 text-slate-400 shrink-0" />
-            {!isCompact && <span>Sign Out (Demo)</span>}
+            {!isCompact && <span>Sign Out</span>}
           </button>
         </div>
       </div>

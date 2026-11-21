@@ -16,6 +16,8 @@ import {
   Trash2,
   Sliders,
   Sparkles,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import {
   AccountStatus,
@@ -27,6 +29,7 @@ import {
   User,
 } from '../types/pos';
 import {
+  ALLOWED_CASHIER_STAFF_PERMISSIONS,
   canActorResetUserPassword,
   CreateCustomRoleInput,
   CreateStaffInput,
@@ -47,14 +50,14 @@ interface StaffManagementPageProps {
   shopAssignments: ShopAssignment[];
   allUsers: User[];
   customRoles?: CustomRole[];
-  onCreateStaff: (input: CreateStaffInput) => User;
+  onCreateStaff: (input: CreateStaffInput) => User | Promise<User>;
   onUpdateStaff: (
     userId: string,
     input: CreateStaffInput,
     status: AccountStatus
-  ) => void;
-  onToggleStaffStatus: (userId: string, nextStatus: AccountStatus) => void;
-  onResetUserPassword?: (userId: string, newPassword: string) => void;
+  ) => void | Promise<void>;
+  onToggleStaffStatus: (userId: string, nextStatus: AccountStatus) => void | Promise<void>;
+  onResetUserPassword?: (userId: string, newPassword: string) => void | Promise<void>;
   onCreateCustomRole?: (input: CreateCustomRoleInput) => CustomRole;
   onUpdateCustomRole?: (roleId: string, input: CreateCustomRoleInput) => void;
   onDeleteCustomRole?: (roleId: string) => { success: boolean; error?: string };
@@ -155,6 +158,8 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
   const [emailInput, setEmailInput] = useState<string>(
     savedDraft?.emailInput ?? ''
   );
+  const [passwordInput, setPasswordInput] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
   const [selectedRoleKey, setSelectedRoleKey] = useState<string>(
     savedDraft?.selectedRoleKey ?? 'cashier'
   );
@@ -254,6 +259,8 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
     setEditingStaff(null);
     setFullNameInput('');
     setEmailInput('');
+    setPasswordInput('');
+    setShowPassword(false);
     setSelectedRoleKey('cashier');
     setRoleLabelInput('Cashier');
     setCustomRoleIdInput(undefined);
@@ -269,6 +276,8 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
     setEditingStaff(staffUser);
     setFullNameInput(staffUser.fullName);
     setEmailInput(staffUser.email);
+    setPasswordInput('');
+    setShowPassword(false);
 
     const matchingCustom = availableRoles.find(
       (r) => r.id === staffUser.customRoleId || r.id === staffUser.role
@@ -293,7 +302,9 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
   };
 
   const effectiveStaffBaseRole: 'shop_manager' | 'cashier' =
-    selectedRoleKey === 'shop_manager' ? 'shop_manager' : 'cashier';
+    selectedRoleKey === 'shop_manager' || selectedRoleKey.startsWith('custom:')
+      ? 'shop_manager'
+      : 'cashier';
 
   const handleRoleSelectChange = (roleKey: string) => {
     setSelectedRoleKey(roleKey);
@@ -311,14 +322,7 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
       if (matched) {
         setRoleLabelInput(matched.name);
         setCustomRoleIdInput(matched.id);
-        const allowedForCashier = matched.permissions.filter((perm) =>
-          isPermissionAllowedForStaffRole('cashier', perm)
-        );
-        setSelectedPermissions(
-          allowedForCashier.length > 0
-            ? allowedForCashier
-            : [...ROLE_DEFAULT_PERMISSIONS.cashier]
-        );
+        setSelectedPermissions([...matched.permissions]);
       }
     }
   };
@@ -342,16 +346,26 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
     );
   };
 
-  const handleSubmitStaffForm = (e: React.FormEvent) => {
+  const handleSubmitStaffForm = async (e: React.FormEvent) => {
     e.preventDefault();
     const isCustom = selectedRoleKey.startsWith('custom:');
-    const baseRole = isCustom
-      ? 'cashier'
-      : (selectedRoleKey as 'shop_manager' | 'cashier');
+    const hasManagerPermissions = selectedPermissions.some((p) =>
+      !ALLOWED_CASHIER_STAFF_PERMISSIONS.has(p)
+    );
+    const baseRole: 'shop_manager' | 'cashier' =
+      selectedRoleKey === 'shop_manager' || hasManagerPermissions
+        ? 'shop_manager'
+        : 'cashier';
+
+    if (!editingStaff && passwordInput.trim() && passwordInput.trim().length < 6) {
+      setFormError('Staff password must be at least 6 characters long.');
+      return;
+    }
 
     const payload: CreateStaffInput = {
       fullName: fullNameInput,
       email: emailInput,
+      password: passwordInput.trim() || undefined,
       role: baseRole,
       roleLabel: roleLabelInput,
       customRoleId: customRoleIdInput,
@@ -371,18 +385,26 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
       return;
     }
 
-    if (editingStaff) {
-      onUpdateStaff(editingStaff.id, payload, statusInput);
-      setFeedbackBanner(
-        `Updated staff member "${payload.fullName.trim()}" (${roleLabelInput}) with ${payload.assignedShopIds.length} assigned shop(s) and ${payload.permissions.length} permission(s).`
-      );
-    } else {
-      const created = onCreateStaff(payload);
-      setFeedbackBanner(
-        `Created staff account for "${created.fullName}" (${roleLabelInput}) under ${business.name}.`
-      );
+    try {
+      if (editingStaff) {
+        await onUpdateStaff(editingStaff.id, payload, statusInput);
+        setFeedbackBanner(
+          `Updated staff member "${payload.fullName.trim()}" (${roleLabelInput}) with ${payload.assignedShopIds.length} assigned shop(s) and ${payload.permissions.length} permission(s).`
+        );
+      } else {
+        const created = await onCreateStaff(payload);
+        setFeedbackBanner(
+          `Created staff account for "${created.fullName}" (${roleLabelInput}) under ${business.name}.${
+            payload.password
+              ? ' Direct login active (email pre-verified).'
+              : ''
+          }`
+        );
+      }
+      setFormOpen(false);
+    } catch (err: any) {
+      setFormError(err?.message || 'Failed to save staff account.');
     }
-    setFormOpen(false);
   };
 
   // Custom Staff Role Handlers
@@ -1024,10 +1046,52 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
                     type="email"
                     value={emailInput}
                     onChange={(e) => setEmailInput(e.target.value)}
-                    placeholder="e.g. funke.cashier@emeraldcrest.demo"
+                    placeholder="e.g. staff@yourbusiness.com"
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 font-mono focus:outline-none focus:border-emerald-600"
                   />
                 </div>
+
+                {!editingStaff && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label
+                        htmlFor="staff-form-password"
+                        className="block font-semibold text-slate-700"
+                      >
+                        Staff Login Password
+                      </label>
+                      <span className="text-[11px] text-emerald-700 font-medium">
+                        Direct Login (Pre-verified)
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        id="staff-form-password"
+                        type={showPassword ? 'text' : 'password'}
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        placeholder="e.g. Min. 6 characters"
+                        autoComplete="new-password"
+                        className="w-full pl-3 pr-10 py-2 border border-slate-300 rounded-lg text-slate-900 font-mono focus:outline-none focus:border-emerald-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                      >
+                        {showPassword ? (
+                          <EyeOff className="w-4 h-4" />
+                        ) : (
+                          <Eye className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Allows staff to log in immediately without waiting for or needing email verification.
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <label

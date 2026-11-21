@@ -203,6 +203,8 @@ export function canUserAccessView(user: User, view: AppView): boolean {
       return hasPermission(user, 'process_sales');
 
     case 'inventory':
+    case 'product_transfer':
+    case 'expiring_products':
       return (
         hasPermission(user, 'manage_products') ||
         hasPermission(user, 'adjust_inventory')
@@ -402,6 +404,9 @@ export function canActorResetUserPassword(
   if (targetUser.role === 'platform_admin') {
     return false;
   }
+  if (actor.role === 'platform_admin') {
+    return true;
+  }
   if (
     !actor.businessId ||
     actor.businessId === 'PLATFORM' ||
@@ -549,8 +554,10 @@ export function isSyntheticClientUserId(uid?: string | null): boolean {
   if (!uid || typeof uid !== 'string') return false;
   const clean = uid.trim();
   return (
+    clean.startsWith('usr-') ||
     /^usr-\d{4}-[a-z0-9]{4}$/i.test(clean) ||
-    /^usr-live-owner-/i.test(clean)
+    /^usr-live-owner-/i.test(clean) ||
+    /^usr-staff-/i.test(clean)
   );
 }
 
@@ -822,11 +829,12 @@ export function isValidEmail(email: string): boolean {
 export interface CreateBusinessInput {
   name: string;
   businessType: BusinessType;
-  contactEmail: string;
+  contactEmail?: string;
   primaryPhone: string;
   headquartersAddress: string;
   ownerName: string;
   ownerEmail: string;
+  ownerPassword?: string;
   ownerUid?: string;
   sendPasswordSetupEmail?: boolean;
   initialShopName?: string;
@@ -841,6 +849,7 @@ export interface CreateBusinessInput {
   currencySymbol?: string;
   defaultTaxRatePercent?: number;
   status?: 'active' | 'suspended';
+  logoUrl?: string;
 }
 
 /**
@@ -855,7 +864,7 @@ export function validateBusinessRegistrationInput(
   editingBusinessId?: string
 ): { valid: boolean; error?: string } {
   const name = input.name.trim();
-  const contactEmail = input.contactEmail.trim().toLowerCase();
+  const contactEmail = (input.contactEmail || input.ownerEmail || '').trim().toLowerCase();
   const phone = input.primaryPhone.trim();
   const address = input.headquartersAddress.trim();
   const ownerName = input.ownerName.trim();
@@ -891,6 +900,16 @@ export function validateBusinessRegistrationInput(
       error:
         'Platform Administrator email must remain separate from tenant Business Owner accounts.',
     };
+  }
+
+  // If registering a new business and password is provided, ensure it meets length requirement
+  if (!editingBusinessId && input.ownerPassword !== undefined) {
+    if (!input.ownerPassword || input.ownerPassword.trim().length < 6) {
+      return {
+        valid: false,
+        error: 'Owner login password must be at least 6 characters long.',
+      };
+    }
   }
 
   const duplicateName = existingBusinesses.find(
@@ -934,12 +953,16 @@ export function validateBusinessRegistrationInput(
 }
 
 export interface CreateShopInput {
+  businessId?: string;
+  code?: string;
   name: string;
   address: string;
   phone: string;
   description?: string;
   category?: ShopCategory;
   locationCity?: string;
+  managerName?: string;
+  taxRatePercent?: number;
 }
 
 /**
@@ -982,6 +1005,7 @@ export function validateShopRegistrationInput(
 export interface CreateStaffInput {
   fullName: string;
   email: string;
+  password?: string;
   role: UserRole | string;
   roleLabel?: string;
   customRoleId?: string;
@@ -989,12 +1013,7 @@ export interface CreateStaffInput {
   permissions: PermissionKey[];
 }
 
-export const OWNER_ONLY_STAFF_PERMISSIONS = new Set<string>([
-  'manage_business_settings',
-  'manage_shops',
-  'manage_staff',
-  'view_business_reports',
-]);
+export const OWNER_ONLY_STAFF_PERMISSIONS = new Set<string>([]);
 
 export const MANAGER_ONLY_STAFF_PERMISSIONS = new Set<string>([
   'manage_products',
@@ -1024,6 +1043,10 @@ export const ALLOWED_CASHIER_STAFF_PERMISSIONS = new Set<string>([
 export const ALLOWED_SHOP_MANAGER_STAFF_PERMISSIONS = new Set<string>([
   ...ALLOWED_CASHIER_STAFF_PERMISSIONS,
   ...MANAGER_ONLY_STAFF_PERMISSIONS,
+  'manage_staff',
+  'manage_shops',
+  'manage_business_settings',
+  'view_business_reports',
 ]);
 
 export function isPermissionAllowedForStaffRole(
@@ -1352,6 +1375,8 @@ export interface ProductFormInput {
   sellingPrice: number;
   stockQuantity: number;
   reorderLevel: number;
+  hasExpiry?: boolean;
+  expiryDate?: string;
 }
 
 /**
@@ -1385,6 +1410,12 @@ export function validateProductInput(
   }
   if (Number.isNaN(input.reorderLevel) || input.reorderLevel < 0) {
     return { valid: false, error: 'Reorder alert level cannot be negative.' };
+  }
+  if (input.hasExpiry && (!input.expiryDate || !input.expiryDate.trim())) {
+    return {
+      valid: false,
+      error: 'Please specify an expiration date or toggle off expiration tracking.',
+    };
   }
 
   const duplicateSku = existingShopProducts.find(
@@ -1503,7 +1534,7 @@ export function applyStockAdjustment(
     quantityDelta: actualDelta,
     previousQuantity,
     newQuantity,
-    reason: reason.trim() || 'Manual stock adjustment (Demo)',
+    reason: reason.trim() || 'Manual stock adjustment',
     performedByUserId: user.id,
     performedByName: user.fullName,
     createdAt: timestampIso,
@@ -1606,11 +1637,13 @@ export interface ShopDashboardSummary {
 export function getShopDashboardMetrics(
   shop: Shop,
   products: Product[],
-  sales: SaleTransaction[]
+  sales: SaleTransaction[],
+  targetDateYmd?: string
 ): ShopDashboardSummary {
   const shopProducts = products.filter(
     (p) => p.shopId === shop.id && p.businessId === shop.businessId
   );
+  const todayYmd = targetDateYmd || getTodayYmd();
   const shopSales = sales.filter(
     (s) =>
       s.shopId === shop.id &&
@@ -1618,14 +1651,17 @@ export function getShopDashboardMetrics(
       s.status !== 'voided_demo' &&
       s.status !== 'refunded_demo'
   );
+  const todaysSales = shopSales.filter(
+    (s) => (s.createdAt || '').slice(0, 10) === todayYmd
+  );
 
   const todaysSalesTotal =
-    Math.round(shopSales.reduce((sum, s) => sum + s.totalAmount, 0) * 100) / 100;
-  const transactionCount = shopSales.length;
+    Math.round(todaysSales.reduce((sum, s) => sum + s.totalAmount, 0) * 100) / 100;
+  const transactionCount = todaysSales.length;
 
   const cashSalesTotal =
     Math.round(
-      shopSales
+      todaysSales
         .filter((s) => s.paymentMethod === 'cash')
         .reduce((sum, s) => sum + s.totalAmount, 0) * 100
     ) / 100;
@@ -1645,10 +1681,14 @@ export function getShopDashboardMetrics(
     (s) =>
       s.shopId === shop.id &&
       s.businessId === shop.businessId &&
-      s.syncStatus !== 'synced_demo'
+      s.syncStatus !== 'synced_demo' &&
+      s.syncStatus !== 'synced' &&
+      (s.syncStatus === 'pending_local_queue' ||
+        s.syncStatus === 'queued_offline_demo' ||
+        s.status === 'pending_sync')
   ).length;
 
-  const pendingSyncCount = Math.max(shop.pendingSyncCount, unsyncedSalesCount);
+  const pendingSyncCount = unsyncedSalesCount;
 
   const inventoryRetailValue =
     Math.round(
@@ -2809,13 +2849,17 @@ export const DEFAULT_DETECTED_PRINTERS: PrinterDevice[] = [
 ];
 
 export const DEFAULT_SHOP_PRINTER_SETTINGS: ShopPrinterSettings = {
-  defaultPrinterId: 'prn-epson-tm88',
+  // No printer is assumed until Windows discovery and user assignment.
+  defaultPrinterId: '',
+  receiptPrinterId: '',
+  a4PrinterId: '',
   receiptPrinterMode: 'thermal',
   allowReceiptReprint: true,
   thermalPaperWidth: '80mm',
-  autoCutReceipt: true,
-  openCashDrawerOnPrint: true,
+  autoCutReceipt: false,
+  openCashDrawerOnPrint: false,
   printStoreLogo: true,
+  autoPrintOnSale: false,
 };
 
 export function getShopPrinterSettings(

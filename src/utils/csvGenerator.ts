@@ -1,4 +1,11 @@
-import { Business, Product, SaleTransaction, Shop } from '../types/pos';
+import {
+  Business,
+  DebtCustomer,
+  DebtTransaction,
+  Product,
+  SaleTransaction,
+  Shop,
+} from '../types/pos';
 import { formatPaymentMethodLabel } from './pdfGenerator';
 import { buildSalesSummaryReportData } from './posCalculations';
 
@@ -315,6 +322,315 @@ export function downloadSalesHistoryExcel(options: SalesHistoryExcelOptions): vo
       ? 'Receipts'
       : 'Itemized';
   const defaultName = `Sales_Report_${safeShopCode}_${suffix}_${safeRange}.csv`;
+
+  link.setAttribute('href', url);
+  link.setAttribute('download', options.fileName || defaultName);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+export interface DebtCustomersCsvOptions {
+  customers: DebtCustomer[];
+  business: Business;
+  shop: Shop;
+  symbol?: string;
+  fileName?: string;
+}
+
+export function generateDebtCustomersCsvString({
+  customers,
+}: {
+  customers: DebtCustomer[];
+}): string {
+  const headers = [
+    '#',
+    'Customer Name',
+    'Phone Number',
+    'Credit Limit',
+    'Total Credit',
+    'Amount Paid',
+    'Balance Remaining',
+    'Account Status',
+    'Notes',
+  ];
+
+  const rows = customers.map((c, idx) => {
+    const isSettled = c.balanceRemaining <= 0;
+    const isOverLimit =
+      c.creditLimitEnabled &&
+      c.creditLimitAmount > 0 &&
+      c.balanceRemaining > c.creditLimitAmount;
+    const statusLabel = isSettled
+      ? 'Settled'
+      : isOverLimit
+      ? 'Over Credit Limit'
+      : 'Active Balance';
+
+    return [
+      idx + 1,
+      c.fullName,
+      c.phone,
+      c.creditLimitEnabled && c.creditLimitAmount > 0
+        ? c.creditLimitAmount.toFixed(2)
+        : 'None',
+      c.totalCredit.toFixed(2),
+      c.amountPaid.toFixed(2),
+      c.balanceRemaining.toFixed(2),
+      statusLabel,
+      c.notes || '',
+    ];
+  });
+
+  const totalCredit = customers.reduce((sum, c) => sum + c.totalCredit, 0);
+  const totalPaid = customers.reduce((sum, c) => sum + c.amountPaid, 0);
+  const totalBalance = customers.reduce(
+    (sum, c) => sum + c.balanceRemaining,
+    0
+  );
+
+  const csvLines = [
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+    [
+      'Total',
+      `${customers.length} Customers`,
+      '',
+      '',
+      totalCredit.toFixed(2),
+      totalPaid.toFixed(2),
+      totalBalance.toFixed(2),
+      '',
+      '',
+    ]
+      .map(escapeCsvCell)
+      .join(','),
+  ];
+
+  return '\uFEFF' + csvLines.join('\r\n');
+}
+
+export function downloadDebtCustomersCsv(options: DebtCustomersCsvOptions): void {
+  const csvContent = generateDebtCustomersCsvString({
+    customers: options.customers,
+  });
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  const safeShopCode = options.shop.code.replace(/[^a-zA-Z0-9]/g, '_');
+  const safeDate = new Date().toISOString().slice(0, 10);
+  const defaultName = `Debt_Customers_${safeShopCode}_${safeDate}.csv`;
+
+  link.setAttribute('href', url);
+  link.setAttribute('download', options.fileName || defaultName);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+export interface DebtTransactionsCsvOptions {
+  transactions: DebtTransaction[];
+  business: Business;
+  shop: Shop;
+  symbol?: string;
+  fileName?: string;
+}
+
+export function generateDebtTransactionsCsvString({
+  transactions,
+}: {
+  transactions: DebtTransaction[];
+}): string {
+  const headers = [
+    '#',
+    'Date & Time',
+    'Reference',
+    'Customer Name',
+    'Customer Phone',
+    'Transaction Type',
+    'Amount',
+    'Payment Method',
+    'Staff / Cashier',
+    'Notes',
+  ];
+
+  const rows = transactions.map((tx, idx) => [
+    idx + 1,
+    tx.createdAt,
+    tx.reference,
+    tx.customerName,
+    tx.customerPhone,
+    tx.type === 'credit' ? 'Credit Purchase' : 'Deposit / Payment',
+    tx.amount.toFixed(2),
+    tx.paymentMethod ? formatPaymentMethodLabel(tx.paymentMethod) : 'Credit',
+    tx.recordedByName || 'Staff',
+    tx.notes || '',
+  ]);
+
+  const totalCredit = transactions
+    .filter((t) => t.type === 'credit')
+    .reduce((sum, t) => sum + t.amount, 0);
+  const totalDeposit = transactions
+    .filter((t) => t.type === 'deposit')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const csvLines = [
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+    [
+      'Total',
+      `${transactions.length} Transactions`,
+      '',
+      '',
+      '',
+      `Credit: ${totalCredit.toFixed(2)} | Deposit: ${totalDeposit.toFixed(2)}`,
+      (totalCredit - totalDeposit).toFixed(2),
+      '',
+      '',
+      '',
+    ]
+      .map(escapeCsvCell)
+      .join(','),
+  ];
+
+  return '\uFEFF' + csvLines.join('\r\n');
+}
+
+export function downloadDebtTransactionsCsv(
+  options: DebtTransactionsCsvOptions
+): void {
+  const csvContent = generateDebtTransactionsCsvString({
+    transactions: options.transactions,
+  });
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  const safeShopCode = options.shop.code.replace(/[^a-zA-Z0-9]/g, '_');
+  const safeDate = new Date().toISOString().slice(0, 10);
+  const defaultName = `Debt_Transactions_${safeShopCode}_${safeDate}.csv`;
+
+  link.setAttribute('href', url);
+  link.setAttribute('download', options.fileName || defaultName);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+export interface CustomerStatementCsvOptions {
+  customer: DebtCustomer;
+  transactions: DebtTransaction[];
+  business: Business;
+  shop: Shop;
+  symbol?: string;
+  fileName?: string;
+}
+
+export function generateCustomerStatementCsvString({
+  customer,
+  transactions,
+}: {
+  customer: DebtCustomer;
+  transactions: DebtTransaction[];
+}): string {
+  const sortedTx = [...transactions]
+    .filter((t) => t.customerId === customer.id)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  const headers = [
+    '#',
+    'Date & Time',
+    'Reference',
+    'Transaction Type',
+    'Credit (Debt)',
+    'Payment (Deposit)',
+    'Running Balance',
+    'Payment Method',
+    'Staff / Cashier',
+    'Notes',
+  ];
+
+  let runningBalance = 0;
+  const rows = sortedTx.map((tx, idx) => {
+    const isCredit = tx.type === 'credit';
+    if (isCredit) {
+      runningBalance += tx.amount;
+    } else {
+      runningBalance -= tx.amount;
+    }
+    return [
+      idx + 1,
+      tx.createdAt,
+      tx.reference,
+      isCredit ? 'Credit Purchase' : 'Deposit / Payment',
+      isCredit ? tx.amount.toFixed(2) : '0.00',
+      !isCredit ? tx.amount.toFixed(2) : '0.00',
+      runningBalance.toFixed(2),
+      tx.paymentMethod ? formatPaymentMethodLabel(tx.paymentMethod) : 'Credit',
+      tx.recordedByName || 'Staff',
+      tx.notes || '',
+    ];
+  });
+
+  const csvLines = [
+    [`Customer Name: ${customer.fullName}`],
+    [`Phone Number: ${customer.phone}`],
+    [
+      `Credit Limit: ${
+        customer.creditLimitEnabled && customer.creditLimitAmount > 0
+          ? customer.creditLimitAmount.toFixed(2)
+          : 'None'
+      }`,
+    ],
+    [`Total Credit: ${customer.totalCredit.toFixed(2)}`],
+    [`Total Paid: ${customer.amountPaid.toFixed(2)}`],
+    [`Current Balance Due: ${customer.balanceRemaining.toFixed(2)}`],
+    [''],
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+    [
+      'Total',
+      `${sortedTx.length} Transactions`,
+      '',
+      '',
+      customer.totalCredit.toFixed(2),
+      customer.amountPaid.toFixed(2),
+      customer.balanceRemaining.toFixed(2),
+      '',
+      '',
+      '',
+    ]
+      .map(escapeCsvCell)
+      .join(','),
+  ];
+
+  return '\uFEFF' + csvLines.join('\r\n');
+}
+
+export function downloadCustomerStatementCsv(
+  options: CustomerStatementCsvOptions
+): void {
+  const csvContent = generateCustomerStatementCsvString({
+    customer: options.customer,
+    transactions: options.transactions,
+  });
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  const safeCustomer = options.customer.fullName.replace(/[^a-zA-Z0-9]/g, '_');
+  const safeDate = new Date().toISOString().slice(0, 10);
+  const defaultName = `Debt_Statement_${safeCustomer}_${safeDate}.csv`;
 
   link.setAttribute('href', url);
   link.setAttribute('download', options.fileName || defaultName);

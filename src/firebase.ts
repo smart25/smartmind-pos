@@ -8,6 +8,7 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import {
   getAuth,
+  connectAuthEmulator,
   GoogleAuthProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
@@ -20,6 +21,7 @@ import {
 import {
   getFirestore,
   initializeFirestore,
+  connectFirestoreEmulator,
   setLogLevel,
   doc,
   getDocFromServer,
@@ -31,6 +33,7 @@ import {
   Functions,
   HttpsCallable,
 } from 'firebase/functions';
+import { getStorage, connectStorageEmulator } from 'firebase/storage';
 import appletConfig from '../firebase-applet-config.json';
 import type {
   InviteAuthorizedStaffRequest,
@@ -41,6 +44,9 @@ import type {
   SetTenantStatusRequest,
   SyncOperationPayload,
   SyncOperationResponse,
+  StartPlatformAdminSupportSessionRequest,
+  EndPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse,
 } from '../functions/src/index';
 
 export interface InviteAuthorizedStaffResponse {
@@ -66,6 +72,9 @@ export type {
   SetTenantStatusRequest,
   SyncOperationPayload,
   SyncOperationResponse,
+  StartPlatformAdminSupportSessionRequest,
+  EndPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse,
 };
 export type SyncOperationRequest = SyncOperationPayload;
 
@@ -316,11 +325,35 @@ function createFirestoreInstance(): Firestore {
 }
 
 export const db: Firestore = createFirestoreInstance();
+export const storage = getStorage(app);
 export const auth: Auth = getAuth(app);
 export const functions: Functions = getFunctions(
   app,
   firebaseConfig.functionsRegion
 );
+
+// Local Firebase Emulator connection is strictly opt-in and staging-only.
+const useFirebaseEmulators =
+  isStagingMode &&
+  import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true';
+
+if (useFirebaseEmulators) {
+  if (firebaseConfig.projectId !== 'smartmind-pos-staging') {
+    throw new Error(
+      'FIREBASE_EMULATOR_SAFETY_ERROR: Emulators can only be used with smartmind-pos-staging.'
+    );
+  }
+
+  console.info('[Firebase] Connecting to local staging emulators.');
+
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', {
+    disableWarnings: true,
+  });
+
+  connectFirestoreEmulator(db, '127.0.0.1', 8085);
+  connectStorageEmulator(storage, '127.0.0.1', 9199);
+}
+
 export const googleProvider = new GoogleAuthProvider();
 
 export const callProvisionBusinessAndPrimaryOwner: HttpsCallable<
@@ -361,6 +394,50 @@ export const callSyncPosOperation: HttpsCallable<
 > = httpsCallable<SyncOperationPayload, SyncOperationResponse>(
   functions,
   'syncPosOperation'
+);
+
+export const callStartPlatformAdminSupportSession: HttpsCallable<
+  StartPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse
+> = httpsCallable<
+  StartPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse
+>(functions, 'startPlatformAdminSupportSession');
+
+export const callEndPlatformAdminSupportSession: HttpsCallable<
+  EndPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse
+> = httpsCallable<
+  EndPlatformAdminSupportSessionRequest,
+  PlatformAdminSupportSessionResponse
+>(functions, 'endPlatformAdminSupportSession');
+
+export const callGetPlatformAdminSupportSession: HttpsCallable<
+  Record<string, never>,
+  PlatformAdminSupportSessionResponse | null
+> = httpsCallable<
+  Record<string, never>,
+  PlatformAdminSupportSessionResponse | null
+>(functions, 'getPlatformAdminSupportSession');
+
+export interface ResetUserPasswordRequest {
+  targetUserId: string;
+  targetEmail: string;
+  newPassword: string;
+}
+
+export interface ResetUserPasswordResponse {
+  success: boolean;
+  message: string;
+  targetUserId: string;
+}
+
+export const callResetUserPassword: HttpsCallable<
+  ResetUserPasswordRequest,
+  ResetUserPasswordResponse
+> = httpsCallable<ResetUserPasswordRequest, ResetUserPasswordResponse>(
+  functions,
+  'resetUserPassword'
 );
 
 export const callSyncShopOperation: HttpsCallable<
@@ -445,18 +522,30 @@ export async function testFirestoreConnection(): Promise<boolean> {
     return false;
   }
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    return true;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes('the client is offline')
-    ) {
-      console.warn('Firestore client is currently operating in offline mode.');
-      return false;
-    }
-    // Permission denied on /test/connection confirms Firestore server is reachable
-    return true;
+    const timeoutPromise = new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), 2500);
+    });
+    const checkPromise = (async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+        return true;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes('the client is offline') ||
+            error.message.includes('failed-precondition') ||
+            error.message.includes('unavailable') ||
+            error.message.includes('network-request-failed'))
+        ) {
+          return false;
+        }
+        // Permission denied or other response confirms Firestore server is reachable over network
+        return true;
+      }
+    })();
+    return await Promise.race([checkPromise, timeoutPromise]);
+  } catch {
+    return false;
   }
 }
 

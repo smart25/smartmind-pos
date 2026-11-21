@@ -31,7 +31,6 @@ import {
   User,
 } from '../types/pos';
 import {
-  DEFAULT_DETECTED_PRINTERS,
   extractSaleDateYmd,
   filterAndSortSalesHistory,
   formatCurrency,
@@ -42,6 +41,10 @@ import {
   SalesDateRangePreset,
   SalesDateSortOrder,
 } from '../utils/posCalculations';
+import {
+  resolveEffectivePrinter,
+  printSaleReceipt,
+} from '../utils/receiptPrinter';
 import { downloadSalesSummaryPdf } from '../utils/pdfGenerator';
 import { downloadSalesHistoryExcel } from '../utils/csvGenerator';
 
@@ -171,15 +174,13 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
   const symbol = business.currencySymbol;
   const printerSettings = useMemo(() => getShopPrinterSettings(shop), [shop]);
   const activeDefaultPrinter = useMemo(
-    () =>
-      DEFAULT_DETECTED_PRINTERS.find(
-        (p) => p.id === printerSettings.defaultPrinterId
-      ) || DEFAULT_DETECTED_PRINTERS[0],
-    [printerSettings.defaultPrinterId]
+    () => resolveEffectivePrinter(shop),
+    [shop]
   );
   const [reprintModalSale, setReprintModalSale] =
     useState<SaleTransaction | null>(null);
   const [reprintDispatched, setReprintDispatched] = useState<boolean>(false);
+  const [isReprinting, setIsReprinting] = useState<boolean>(false);
 
   const shopUsers = useMemo(
     () => getShopSalesUsers(shopSales, businessUsers, shop.id, business.id),
@@ -489,7 +490,7 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
               className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-slate-800 font-medium"
             >
               <option value="all">All Statuses</option>
-              <option value="completed_demo">Completed (Demo)</option>
+              <option value="completed_demo">Completed</option>
               <option value="pending_sync">Pending Sync</option>
             </select>
 
@@ -863,7 +864,10 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
                         <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 capitalize">
                           {sale.paymentMethod.replace('_', ' ')}
                         </span>
-                        {sale.syncStatus === 'synced_demo' ? (
+                        {sale.status === 'completed' ||
+                        sale.status === 'completed_demo' ||
+                        sale.syncStatus === 'synced' ||
+                        sale.syncStatus === 'synced_demo' ? (
                           <span className="text-emerald-700 font-medium inline-flex items-center gap-1">
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>Completed</span>
@@ -993,7 +997,10 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
                             {sale.paymentMethod.replace('_', ' ')}
                           </td>
                           <td className="py-3.5 px-2.5 whitespace-nowrap">
-                            {sale.syncStatus === 'synced_demo' ? (
+                            {sale.status === 'completed' ||
+                            sale.status === 'completed_demo' ||
+                            sale.syncStatus === 'synced' ||
+                            sale.syncStatus === 'synced_demo' ? (
                               <span className="text-emerald-700 font-medium inline-flex items-center gap-1">
                                 <CheckCircle2 className="w-3.5 h-3.5" />
                                 <span>Completed</span>
@@ -1087,8 +1094,10 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
                 <div>
                   <span className="text-slate-500">Sync Queue Status</span>
                   <p className="font-semibold text-slate-800 mt-0.5">
-                    {selectedSale.syncStatus === 'synced_demo'
-                      ? 'Synced (Demo State)'
+                    {selectedSale.status === 'completed' ||
+                    selectedSale.syncStatus === 'synced' ||
+                    selectedSale.syncStatus === 'synced_demo'
+                      ? 'Cloud Synced (Verified)'
                       : 'Queued Locally (Pending Sync)'}
                   </p>
                 </div>
@@ -1163,7 +1172,7 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
                   </span>
                 </div>
                 <div className="flex justify-between pt-2 border-t border-slate-100 text-sm font-display font-bold text-slate-900">
-                  <span>Receipt Total (Demo)</span>
+                  <span>Receipt Total</span>
                   <span className="font-mono tabular-nums text-emerald-700">
                     {formatCurrency(selectedSale.totalAmount, symbol)}
                   </span>
@@ -1200,7 +1209,7 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
                       </span>
                     </button>
                     <p className="text-[11px] text-slate-500 text-center">
-                      Default: <span className="font-semibold text-slate-700">{activeDefaultPrinter.name}</span> · Prints with Duplicate watermark
+                      Default: <span className="font-semibold text-slate-700">{activeDefaultPrinter.printerName}</span> · Prints with Duplicate watermark
                     </p>
                   </div>
                 ) : (
@@ -1243,7 +1252,7 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
                     Reprint Receipt · {reprintModalSale.receiptNumber}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Default Printer: {activeDefaultPrinter.name} ({printerSettings.receiptPrinterMode.toUpperCase()} Mode)
+                    Default Printer: {activeDefaultPrinter.printerName} ({printerSettings.receiptPrinterMode.toUpperCase()} Mode)
                   </p>
                 </div>
               </div>
@@ -1377,8 +1386,8 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
               <div className="px-5 py-2.5 bg-emerald-50 border-t border-emerald-200 text-emerald-800 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
-                  Duplicate receipt sent to{' '}
-                  <strong>{activeDefaultPrinter.name}</strong>.
+                  Duplicate receipt printed silently to{' '}
+                  <strong>{activeDefaultPrinter.printerName}</strong>.
                 </span>
               </div>
             )}
@@ -1393,20 +1402,32 @@ export const SalesHistoryPage: React.FC<SalesHistoryPageProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setReprintDispatched(true);
-                  if (typeof window !== 'undefined' && window.print) {
-                    try {
-                      window.print();
-                    } catch {
-                      // Ignore print dialog cancellation
+                disabled={isReprinting}
+                onClick={async () => {
+                  if (!reprintModalSale) return;
+                  setIsReprinting(true);
+                  try {
+                    const result = await printSaleReceipt({
+                      sale: reprintModalSale,
+                      shop,
+                      business,
+                      isDuplicate: true,
+                    });
+                    if (result.success) {
+                      setReprintDispatched(true);
                     }
+                  } finally {
+                    setIsReprinting(false);
                   }
                 }}
-                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold flex items-center gap-1.5 cursor-pointer"
               >
-                <Printer className="w-3.5 h-3.5" />
-                <span>Print Duplicate Receipt</span>
+                <Printer
+                  className={`w-3.5 h-3.5 ${isReprinting ? 'animate-spin' : ''}`}
+                />
+                <span>
+                  {isReprinting ? 'Printing...' : 'Print Duplicate Receipt'}
+                </span>
               </button>
             </div>
           </div>

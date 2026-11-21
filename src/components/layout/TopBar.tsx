@@ -32,6 +32,8 @@ interface TopBarProps {
   connectivity: ConnectivitySnapshot;
   onChangeConnectivityState: (state: ConnectivityState) => void;
   onOpenMobileSidebar: () => void;
+  onTriggerSync?: () => void;
+  isSwitchingShop?: boolean;
 }
 
 const VIEW_TITLES: Record<AppView, { title: string; subtitle: string }> = {
@@ -50,6 +52,14 @@ const VIEW_TITLES: Record<AppView, { title: string; subtitle: string }> = {
   inventory: {
     title: 'Products & Inventory',
     subtitle: 'Shop catalogue, pricing, stock levels & adjustment ledger',
+  },
+  product_transfer: {
+    title: 'Inter-Shop Product Transfer',
+    subtitle: 'Transfer inventory between branches, track in-transit items & confirm stock receipt',
+  },
+  expiring_products: {
+    title: 'Expiring Products',
+    subtitle: 'Track expiring batches, upcoming expiries, and take immediate risk action',
   },
   invoices: {
     title: 'Invoicing & Quotations',
@@ -102,6 +112,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   connectivity,
   onChangeConnectivityState,
   onOpenMobileSidebar,
+  onTriggerSync,
+  isSwitchingShop = false,
 }) => {
   const viewMeta = VIEW_TITLES[activeView] ?? {
     title: 'Products & Inventory',
@@ -166,8 +178,9 @@ export const TopBar: React.FC<TopBarProps> = ({
             id="topbar-shop-select"
             aria-label="Active Shop"
             value={activeShop.id}
+            disabled={isSwitchingShop}
             onChange={(e) => onSwitchShop(e.target.value)}
-            className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer pr-1 max-w-48 truncate"
+            className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer pr-1 max-w-48 truncate disabled:opacity-50"
           >
             {authorizedShops.map((shop) => (
               <option key={shop.id} value={shop.id}>
@@ -175,6 +188,9 @@ export const TopBar: React.FC<TopBarProps> = ({
               </option>
             ))}
           </select>
+          {isSwitchingShop && (
+            <span className="text-[10px] text-amber-600 font-medium animate-pulse">Switching...</span>
+          )}
           <button
             type="button"
             onClick={onOpenShopDirectory}
@@ -188,6 +204,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         <ConnectivityStatusControl
           snapshot={connectivity}
           onChangeState={onChangeConnectivityState}
+          onTriggerSync={onTriggerSync}
           shopName={activeShop.name}
         />
 

@@ -44,15 +44,6 @@ export interface ElectronSqliteBridge {
   backupDatabase(destinationPath?: string): Promise<{ success: boolean; filePath: string }>;
 }
 
-declare global {
-  interface Window {
-    smartmindDesktopApi?: {
-      isElectron: boolean;
-      sqlite: ElectronSqliteBridge;
-    };
-  }
-}
-
 export class SqliteDesktopDatabaseAdapter implements DatabaseAdapter {
   readonly adapterType = 'sqlite-electron-desktop' as const;
   readonly isPersistent = true;

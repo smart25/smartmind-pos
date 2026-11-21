@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryDatabaseAdapter } from './adapters/memoryAdapter';
 import {
@@ -78,7 +78,7 @@ async function setupPhase6Environment() {
     primary_phone: '+2348010000001',
     headquarters_address: '10 Victoria Island, Lagos',
     currency_code: 'NGN',
-    currency_symbol: '₦',
+    currency_symbol: 'â‚¦',
     default_tax_rate_percent: 7.5,
     status: 'active',
     created_at: '2026-10-20T00:00:00Z',
@@ -102,7 +102,7 @@ async function setupPhase6Environment() {
     primary_phone: '+2348020000002',
     headquarters_address: '20 Wuse II, Abuja',
     currency_code: 'NGN',
-    currency_symbol: '₦',
+    currency_symbol: 'â‚¦',
     default_tax_rate_percent: 7.5,
     status: 'active',
     created_at: '2026-10-20T00:00:00Z',
@@ -328,7 +328,7 @@ async function setupPhase6Environment() {
   };
 }
 
-test('Phase 6 — 1. Authenticated sign-in and sign-out behavior without storing plaintext passwords', async () => {
+test('Phase 6 â€” 1. Authenticated sign-in and sign-out behavior without storing plaintext passwords', async () => {
   const { cloudBackend } = await setupPhase6Environment();
 
   // Valid sign-in
@@ -348,7 +348,7 @@ test('Phase 6 — 1. Authenticated sign-in and sign-out behavior without storing
   assert.equal(cloudBackend.getActiveSessionUser(), null);
 });
 
-test('Phase 6 — 2. Unauthorized access rejection for unauthenticated users', async () => {
+test('Phase 6 â€” 2. Unauthorized access rejection for unauthenticated users', async () => {
   const { cloudBackend } = await setupPhase6Environment();
 
   await assert.rejects(
@@ -362,7 +362,7 @@ test('Phase 6 — 2. Unauthorized access rejection for unauthenticated users', a
   );
 });
 
-test('Phase 6 — 3. Cross-business isolation: Business A user cannot read or write Business B data', async () => {
+test('Phase 6 â€” 3. Cross-business isolation: Business A user cannot read or write Business B data', async () => {
   const { cloudBackend, syncService, ownerAlphaDomain } = await setupPhase6Environment();
 
   // Business A owner attempting to read Business B shop products or sales is rejected
@@ -386,7 +386,7 @@ test('Phase 6 — 3. Cross-business isolation: Business A user cannot read or wr
   );
 });
 
-test('Phase 6 — 4. Shop assignment restriction: manager or cashier assigned to Shop A cannot read or write Shop B data', async () => {
+test('Phase 6 â€” 4. Shop assignment restriction: manager or cashier assigned to Shop A cannot read or write Shop B data', async () => {
   const { cloudBackend, cashierAlpha1Domain } = await setupPhase6Environment();
 
   // Cashier assigned to shop-alpha-1 CAN read shop-alpha-1 products
@@ -417,7 +417,7 @@ test('Phase 6 — 4. Shop assignment restriction: manager or cashier assigned to
   );
 });
 
-test('Phase 6 — 5. Cashier restriction: cashier cannot escalate role, access cost prices, or administer business', async () => {
+test('Phase 6 â€” 5. Cashier restriction: cashier cannot escalate role, access cost prices, or administer business', async () => {
   const { cloudBackend, cashierAlpha1Domain } = await setupPhase6Environment();
 
   // Cashier cannot elevate their own role to business_owner or shop_manager
@@ -462,7 +462,7 @@ test('Phase 6 — 5. Cashier restriction: cashier cannot escalate role, access c
   assert.equal(cashierProducts[0].cost_price_kobo, undefined, 'Cashiers must not receive cost_price_kobo');
 });
 
-test('Phase 6 — 6. Platform administrator provisioning & operational shop data restriction', async () => {
+test('Phase 6 â€” 6. Platform administrator provisioning & operational shop data restriction', async () => {
   const { cloudBackend } = await setupPhase6Environment();
 
   // Platform admin provisions a new business and its single primary owner
@@ -509,7 +509,7 @@ test('Phase 6 — 6. Platform administrator provisioning & operational shop data
   );
 });
 
-test('Phase 6 — 7. Single primary owner constraint: creating a second primary owner for the same business is rejected', async () => {
+test('Phase 6 â€” 7. Single primary owner constraint: creating a second primary owner for the same business is rejected', async () => {
   const { cloudBackend } = await setupPhase6Environment();
 
   // Attempting to assign a second primary owner to biz-alpha without explicit ownership transfer is rejected
@@ -533,7 +533,7 @@ test('Phase 6 — 7. Single primary owner constraint: creating a second primary 
   );
 });
 
-test('Phase 6 — 8. Offline sale queue to cloud sync: locally completed sale syncs cleanly and updates sync_queue status to synced', async () => {
+test('Phase 6 â€” 8. Offline sale queue to cloud sync: locally completed sale syncs cleanly and updates sync_queue status to synced', async () => {
   const {
     localDb,
     cloudBackend,
@@ -596,7 +596,7 @@ test('Phase 6 — 8. Offline sale queue to cloud sync: locally completed sale sy
   assert.equal(cloudProd?.stock_quantity, 8);
 });
 
-test('Phase 6 — 9. Idempotent sync replay: replaying the same operation ID does not create duplicate cloud sales or deduct stock twice', async () => {
+test('Phase 6 â€” 9. Idempotent sync replay: replaying the same operation ID does not create duplicate cloud sales or deduct stock twice', async () => {
   const {
     cloudBackend,
     syncService,
@@ -663,7 +663,7 @@ test('Phase 6 — 9. Idempotent sync replay: replaying the same operation ID doe
   assert.equal(cloudBackend.getCloudSalesForShop('shop-alpha-1').length, 1);
 });
 
-test('Phase 6 — 10 & 13. Concurrent final-unit stock conflict during sync & local preservation in requires_review state', async () => {
+test('Phase 6 â€” 10 & 13. Concurrent final-unit stock conflict during sync & local preservation in requires_review state', async () => {
   const {
     localDb,
     cloudBackend,
@@ -807,7 +807,7 @@ test('Phase 6 — 10 & 13. Concurrent final-unit stock conflict during sync & lo
   assert.equal(breakdown.conflicts[0].entityId, term2Sale.sale.id);
 });
 
-test('Phase 6 — 11. Failed sync retention: network failure increments retry_count and preserves local sale and sync_queue record', async () => {
+test('Phase 6 â€” 11. Failed sync retention: network failure increments retry_count and preserves local sale and sync_queue record', async () => {
   const {
     localDb,
     cloudBackend,
@@ -872,7 +872,7 @@ test('Phase 6 — 11. Failed sync retention: network failure increments retry_co
   assert.equal(recoveryRun.syncedCount, 1);
 });
 
-test('Phase 6 — 12. Sync acknowledgement requirement: record is NOT marked synced without verified server acknowledgement', async () => {
+test('Phase 6 â€” 12. Sync acknowledgement requirement: record is NOT marked synced without verified server acknowledgement', async () => {
   const {
     localDb,
     cloudBackend,
@@ -936,7 +936,7 @@ test('Phase 6 — 12. Sync acknowledgement requirement: record is NOT marked syn
   assert.ok(saleAfterValidAck?.sync_ack_id);
 });
 
-test('Phase 6 — 14. Account switch isolation: switching from User A to User B clears/blocks access to User A business, shop, and pending sync data', async () => {
+test('Phase 6 â€” 14. Account switch isolation: switching from User A to User B clears/blocks access to User A business, shop, and pending sync data', async () => {
   const {
     syncService,
     saleService,
@@ -1002,7 +1002,7 @@ test('Phase 6 — 14. Account switch isolation: switching from User A to User B 
   assert.equal(betaSyncRun.skippedUnauthorizedScopeCount, 1);
 });
 
-test('Phase 6 — 15. Business owner consolidated reporting: combines authorized shop data without double-counting records present both locally and in the cloud', async () => {
+test('Phase 6 â€” 15. Business owner consolidated reporting: combines authorized shop data without double-counting records present both locally and in the cloud', async () => {
   const {
     syncService,
     saleService,
@@ -1010,7 +1010,7 @@ test('Phase 6 — 15. Business owner consolidated reporting: combines authorized
     prodAlpha1,
   } = await setupPhase6Environment();
 
-  // Sale 1: ₦20,000 completed locally AND synced to cloud (exists in BOTH localDb and cloudBackend)
+  // Sale 1: â‚¦20,000 completed locally AND synced to cloud (exists in BOTH localDb and cloudBackend)
   await saleService.finalizeSale({
     businessId: 'biz-alpha',
     shopId: 'shop-alpha-1',
@@ -1042,7 +1042,7 @@ test('Phase 6 — 15. Business owner consolidated reporting: combines authorized
     shopId: 'shop-alpha-1',
   });
 
-  // Sale 2: ₦40,000 completed locally offline (exists ONLY in localDb, pending sync)
+  // Sale 2: â‚¦40,000 completed locally offline (exists ONLY in localDb, pending sync)
   await saleService.finalizeSale({
     businessId: 'biz-alpha',
     shopId: 'shop-alpha-1',
@@ -1076,7 +1076,7 @@ test('Phase 6 — 15. Business owner consolidated reporting: combines authorized
     ['shop-alpha-1', 'shop-alpha-2']
   );
 
-  // Must count 2 total transactions (₦20,000 + ₦40,000 = ₦60,000), NOT 3 (₦80,000)
+  // Must count 2 total transactions (â‚¦20,000 + â‚¦40,000 = â‚¦60,000), NOT 3 (â‚¦80,000)
   assert.equal(report.totalTransactionsCount, 2, 'Sale present in both local and cloud must be counted once');
   assert.equal(report.totalRevenueNaira, 60000);
   assert.equal(report.cloudConfirmedCount, 1);
@@ -1085,7 +1085,7 @@ test('Phase 6 — 15. Business owner consolidated reporting: combines authorized
   assert.equal(report.localPendingRevenueNaira, 40000);
 });
 
-test('Phase 6 — 16. Firebase configuration & SDK initialization smoke test: verifies projectId and firestoreDatabaseId match initialized services without exposing credentials', async () => {
+test('Phase 6 â€” 16. Firebase configuration & SDK initialization smoke test: verifies projectId and firestoreDatabaseId match initialized services without exposing credentials', async () => {
   const { app, auth, db, firebaseConfig, getFirebaseConfigDiagnostics } = await import('../firebase');
   const diag = getFirebaseConfigDiagnostics();
 
@@ -1346,7 +1346,7 @@ test('Live Mode Verification 3: Authenticated shop manager or cashier assigned t
     primaryPhone: '+234800000100',
     headquartersAddress: 'Lagos',
     currencyCode: 'NGN',
-    currencySymbol: '₦',
+    currencySymbol: 'â‚¦',
     defaultTaxRatePercent: 7.5,
     status: 'active',
     createdAt: '2026-10-24',
@@ -1581,7 +1581,7 @@ test('Live Mode Verification 9: Platform Admin live business + primary owner + f
     primaryPhone: '+2348030009999',
     headquartersAddress: '14 Admiralty Way, Lekki',
     currencyCode: 'NGN',
-    currencySymbol: '₦',
+    currencySymbol: 'â‚¦',
     defaultTaxRatePercent: 7.5,
     status: 'active' as const,
     createdAt: '2026-10-24',
@@ -1629,7 +1629,7 @@ test('Live Mode Verification 9: Platform Admin live business + primary owner + f
     status: 'active',
     terminalId: 'TERM-ZEN-01',
     taxRatePercent: 7.5,
-    receiptHeaderNote: 'Zenith Mart Ltd — Zenith Mart Lekki Branch',
+    receiptHeaderNote: 'Zenith Mart Ltd â€” Zenith Mart Lekki Branch',
     receiptFooterNote: 'Thank you for shopping with us.',
     createdAt: '2026-10-24',
     pendingSyncCount: 0,
@@ -2001,7 +2001,7 @@ test('Live Mode Verification 10: Pre-Firebase test sales quarantine, evidence pr
     primaryPhone: '+2348091112233',
     headquartersAddress: '22 Marina Rd, Lagos',
     currencyCode: 'NGN',
-    currencySymbol: '₦',
+    currencySymbol: 'â‚¦',
     defaultTaxRatePercent: 7.5,
     status: 'active',
     createdAt: '2026-10-25',
@@ -2201,6 +2201,8 @@ import {
   executeProvisionBusinessAndPrimaryOwner,
   executeRepairBusinessOwnerAuth,
   executeSetTenantStatus,
+  executeStartPlatformAdminSupportSession,
+  executeEndPlatformAdminSupportSession,
   executeSyncPosOperation,
   resolveCurrentEnvironment,
 } from '../../functions/src/core';
@@ -2630,7 +2632,7 @@ test('Live Mode Verification 11: Cloud Functions security, privileged business p
   );
   assert.equal(prov1.primaryOwner.role, 'business_owner');
   assert.deepEqual(prov1.primaryOwner.assignedShopIds, ['shop-live-alpha-01']);
-  assert.equal(prov1.firstShop.id, 'shop-live-alpha-01');
+  assert.equal(prov1.firstShop?.id, 'shop-live-alpha-01');
 
   // Retry with same idempotencyKey returns idempotent replay without duplicating
   const docCountAfterFirstProvision = namedDbDriver.docs.size;
@@ -2662,6 +2664,266 @@ test('Live Mode Verification 11: Cloud Functions security, privileged business p
     code: 'AM-02',
     name: 'Alpha Mart Branch 2',
   });
+
+    // PLATFORM ADMIN SUPPORT SESSION LIFECYCLE TESTS
+
+  // 1. Start a valid support session for Alpha Mart, Shop 1.
+  const supportSessionRes = await executeStartPlatformAdminSupportSession(
+    namedDbDriver,
+    platformAdminAuth,
+    {
+      businessId: 'biz-live-alpha-01',
+      shopId: 'shop-live-alpha-01',
+    }
+  );
+
+  assert.equal(supportSessionRes.status, 'active');
+  assert.equal(supportSessionRes.adminUid, 'uid-platform-admin-01');
+  assert.equal(supportSessionRes.businessId, 'biz-live-alpha-01');
+  assert.equal(supportSessionRes.shopId, 'shop-live-alpha-01');
+  assert.ok(supportSessionRes.supportSessionId);
+  assert.ok(supportSessionRes.expiresAt);
+
+  const supportSessionDoc = namedDbDriver.docs.get(
+    'platform_support_sessions/uid-platform-admin-01'
+  );
+
+  assert.equal(supportSessionDoc?.status, 'active');
+  assert.equal(supportSessionDoc?.adminUid, 'uid-platform-admin-01');
+  assert.equal(supportSessionDoc?.businessId, 'biz-live-alpha-01');
+  assert.equal(supportSessionDoc?.shopId, 'shop-live-alpha-01');
+
+  // 2. Verify business and platform audit events were recorded.
+  const supportStartAuditId =
+    `support-start-${supportSessionRes.supportSessionId}`;
+
+  const businessSupportAudit = namedDbDriver.docs.get(
+    `businesses/biz-live-alpha-01/audit_events/${supportStartAuditId}`
+  );
+
+  const platformSupportAudit = namedDbDriver.docs.get(
+    `platform_audit_logs/${supportStartAuditId}`
+  );
+
+  assert.equal(
+    businessSupportAudit?.action,
+    'platform_admin_support_started'
+  );
+
+  assert.equal(
+    businessSupportAudit?.userId,
+    'uid-platform-admin-01'
+  );
+
+  assert.equal(
+    platformSupportAudit?.action,
+    'support_session_started'
+  );
+
+  assert.equal(
+    platformSupportAudit?.actorUid,
+    'uid-platform-admin-01'
+  );
+
+  // 3. Reject another active session for the same administrator.
+  await assert.rejects(
+    executeStartPlatformAdminSupportSession(
+      namedDbDriver,
+      platformAdminAuth,
+      {
+        businessId: 'biz-live-alpha-01',
+        shopId: 'shop-live-alpha-02',
+      }
+    ),
+    /SUPPORT_SESSION_ALREADY_ACTIVE/
+  );
+
+  // 4. Reject a shop that does not belong to the requested business.
+  await assert.rejects(
+    executeStartPlatformAdminSupportSession(
+      namedDbDriver,
+      platformAdminAuth,
+      {
+        businessId: 'biz-live-alpha-01',
+        shopId: 'shop-live-other-99',
+      }
+    ),
+    /NOT_FOUND/
+  );
+
+  // 5. Reject an ordinary user attempting to start support access.
+  await assert.rejects(
+    executeStartPlatformAdminSupportSession(
+      namedDbDriver,
+      {
+        uid: 'uid-ordinary-user',
+        token: {
+          email: 'cashier@alphamart.ng',
+          email_verified: true,
+        },
+      },
+      {
+        businessId: 'biz-live-alpha-01',
+        shopId: 'shop-live-alpha-01',
+      }
+    ),
+    /PERMISSION_DENIED/
+  );
+
+  // PLATFORM ADMIN STAFF INVITATION SECURITY TESTS
+
+  const platformStaffInviteBase = {
+    businessId: 'biz-live-alpha-01',
+    fullName: 'Platform Support Cashier',
+    role: 'cashier' as const,
+    assignedShopIds: ['shop-live-alpha-01'],
+    supportSessionId: supportSessionRes.supportSessionId,
+  };
+
+  // 1. Missing support session must be rejected.
+  await assert.rejects(
+    executeInviteAuthorizedStaff(
+      namedDbDriver,
+      platformAdminAuth,
+      {
+        ...platformStaffInviteBase,
+        idempotencyKey: 'idem-platform-staff-missing-session',
+        staffUid: 'uid-platform-staff-missing',
+        email: 'missing.session@alphamart.ng',
+        supportSessionId: undefined,
+      }
+    ),
+    /PERMISSION_DENIED.*active support session/
+  );
+
+  // 2. A different shop must be rejected.
+  await assert.rejects(
+    executeInviteAuthorizedStaff(
+      namedDbDriver,
+      platformAdminAuth,
+      {
+        ...platformStaffInviteBase,
+        idempotencyKey: 'idem-platform-staff-wrong-shop',
+        staffUid: 'uid-platform-staff-wrong-shop',
+        email: 'wrong.shop@alphamart.ng',
+        assignedShopIds: ['shop-live-alpha-02'],
+      }
+    ),
+    /PERMISSION_DENIED.*active support shop/
+  );
+
+  // 3. A valid invitation within the active support scope must succeed.
+  const platformStaffInviteRes = await executeInviteAuthorizedStaff(
+    namedDbDriver,
+    platformAdminAuth,
+    {
+      ...platformStaffInviteBase,
+      idempotencyKey: 'idem-platform-staff-valid',
+      staffUid: 'uid-platform-staff-valid',
+      email: 'support.cashier@alphamart.ng',
+    }
+  );
+
+  assert.equal(platformStaffInviteRes.status, 'created');
+  assert.equal(
+    platformStaffInviteRes.staffUser.id,
+    'uid-platform-staff-valid'
+  );
+  assert.deepEqual(
+    platformStaffInviteRes.staffUser.assignedShopIds,
+    ['shop-live-alpha-01']
+  );
+
+  // Verify the Platform Admin invitation has a platform audit record.
+  const platformStaffAudit = namedDbDriver.docs.get(
+    'platform_audit_logs/aud-staff-idem-platform-staff-valid'
+  );
+
+  assert.equal(platformStaffAudit?.action, 'support_staff_invited');
+  assert.equal(platformStaffAudit?.actorUid, platformAdminAuth.uid);
+  assert.equal(
+    platformStaffAudit?.supportSessionId,
+    supportSessionRes.supportSessionId
+  );
+  assert.equal(
+    platformStaffAudit?.targetStaffUid,
+    'uid-platform-staff-valid'
+  );
+
+  // 4. Expired session must reject even an idempotent replay.
+  const activeSupportSessionPath =
+    'platform_support_sessions/uid-platform-admin-01';
+
+  const activeSupportSession =
+    namedDbDriver.docs.get(activeSupportSessionPath);
+
+  assert.ok(activeSupportSession);
+
+  namedDbDriver.docs.set(activeSupportSessionPath, {
+    ...activeSupportSession,
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  await assert.rejects(
+    executeInviteAuthorizedStaff(
+      namedDbDriver,
+      platformAdminAuth,
+      {
+        ...platformStaffInviteBase,
+        idempotencyKey: 'idem-platform-staff-valid',
+        staffUid: 'uid-platform-staff-valid',
+        email: 'support.cashier@alphamart.ng',
+      }
+    ),
+    /PERMISSION_DENIED.*invalid, expired/
+  );
+
+  // Restore the original expiry so the normal session-end test can proceed.
+  namedDbDriver.docs.set(activeSupportSessionPath, activeSupportSession);
+  // 6. End the valid support session.
+  const supportSessionEndRes =
+    await executeEndPlatformAdminSupportSession(
+      namedDbDriver,
+      platformAdminAuth,
+      {
+        supportSessionId: supportSessionRes.supportSessionId,
+      }
+    );
+
+  assert.equal(supportSessionEndRes.status, 'ended');
+  assert.equal(
+    supportSessionEndRes.supportSessionId,
+    supportSessionRes.supportSessionId
+  );
+
+  const endedSupportSessionDoc = namedDbDriver.docs.get(
+    'platform_support_sessions/uid-platform-admin-01'
+  );
+
+  assert.equal(endedSupportSessionDoc?.status, 'ended');
+  assert.ok(endedSupportSessionDoc?.endedAt);
+
+  // 7. Verify session termination was audited.
+  const supportEndAuditId =
+    `support-end-${supportSessionRes.supportSessionId}`;
+
+  const businessSupportEndAudit = namedDbDriver.docs.get(
+    `businesses/biz-live-alpha-01/audit_events/${supportEndAuditId}`
+  );
+
+  const platformSupportEndAudit = namedDbDriver.docs.get(
+    `platform_audit_logs/${supportEndAuditId}`
+  );
+
+  assert.equal(
+    businessSupportEndAudit?.action,
+    'platform_admin_support_ended'
+  );
+
+  assert.equal(
+    platformSupportEndAudit?.action,
+    'support_session_ended'
+  );
 
   const staffInviteRes = await executeInviteAuthorizedStaff(
     namedDbDriver,
@@ -2764,7 +3026,10 @@ test('Live Mode Verification 11: Cloud Functions security, privileged business p
     }
   );
   assert.equal(adminSyncAttempt.outcome, 'rejected_unauthorized');
-  assert.match(adminSyncAttempt.errorMessage || '', /FORBIDDEN_ROLE_BOUNDARY/);
+  assert.match(
+  adminSyncAttempt.errorMessage || '',
+  /FORBIDDEN_SUPPORT_SESSION_REQUIRED/
+);
 
   // 4b. Cross-business attempt rejected
   const crossBizAttempt = await executeSyncPosOperation(
@@ -3782,11 +4047,12 @@ test('Security Hardening Regression Suite (SEC-01, SEC-02, SEC-06, SEC-10): Sale
       operationType: 'update',
       payload: {
         product: {
-          id: 'prd-sec-rice',
-          shopId: 'shop-sec-01',
-          businessId: 'biz-sec-01',
-          sellingPriceKobo: 5200000,
-        },
+  id: 'prd-sec-rice',
+  name: 'Rice',
+  shopId: 'shop-sec-01',
+  businessId: 'biz-sec-01',
+  sellingPriceKobo: 5200000,
+},
       },
     }
   );
@@ -4180,7 +4446,7 @@ test('Final Checkout Architecture Hardening: Offline durability, atomic syncPosO
     primaryPhone: '+2348035550101',
     headquartersAddress: '10 Victoria Island, Lagos',
     currencyCode: 'NGN',
-    currencySymbol: '₦',
+    currencySymbol: 'â‚¦',
     defaultTaxRatePercent: 7.5,
     status: 'active',
     createdAt: '2026-10-26',
@@ -4944,32 +5210,23 @@ test('Cloud Functions Security Hardening Regression: role-specific staff permiss
     );
   }
 
-  // Shop manager cannot obtain owner-only permissions
-  for (const ownerPerm of [
-    'manage_business_settings',
-    'manage_shops',
-    'manage_staff',
-    'view_business_reports',
-  ]) {
-    await assert.rejects(
-      executeInviteAuthorizedStaff(
-        namedDbDriver,
-        ownerAlphaAuth,
-        {
-          idempotencyKey: `idem-mgr-forbidden-${ownerPerm}`,
-          businessId: 'biz-live-sec-alpha',
-          fullName: 'Crafted Manager',
-          email: `mgr.${ownerPerm}@alphamart-sec.ng`,
-          role: 'shop_manager',
-          assignedShopIds: ['shop-live-sec-alpha-01'],
-          permissions: ['process_sales', ownerPerm],
-        },
-        authDir
-      ),
-      /PERMISSION_DENIED/,
-      `Shop manager must be denied owner-only permission "${ownerPerm}"`
-    );
-  }
+  // Business Owner can grant delegated permissions (including manage_staff) to a shop manager
+  const grantedManagerRes = await executeInviteAuthorizedStaff(
+    namedDbDriver,
+    ownerAlphaAuth,
+    {
+      idempotencyKey: 'idem-mgr-delegated-staff',
+      businessId: 'biz-live-sec-alpha',
+      fullName: 'Delegated Manager',
+      email: 'mgr.delegated@alphamart-sec.ng',
+      role: 'shop_manager',
+      assignedShopIds: ['shop-live-sec-alpha-01'],
+      permissions: ['process_sales', 'manage_staff'],
+    },
+    authDir
+  );
+  assert.equal(grantedManagerRes.status, 'created');
+  assert.ok(grantedManagerRes.staffUser.permissions.includes('manage_staff'));
 
   // =========================================================================
   // 2. Unknown permissions, non-array permissions, and empty permissions arrays are rejected
@@ -5577,7 +5834,7 @@ test('Phase 6 Cloud Functions Client-to-Server Integration: persistLiveBusinessA
     primaryPhone: '+2348031234567',
     headquartersAddress: '45 Admiralty Way, Lekki',
     currencyCode: 'NGN' as const,
-    currencySymbol: '₦',
+    currencySymbol: 'â‚¦',
     defaultTaxRatePercent: 7.5,
     status: 'active' as const,
     createdAt: '2026-10-27',
@@ -5602,7 +5859,7 @@ test('Phase 6 Cloud Functions Client-to-Server Integration: persistLiveBusinessA
     id: generatedShopId,
     businessId: generatedBizId,
     code: 'HRM-01',
-    name: 'Horizon Retail Mart — Main Branch',
+    name: 'Horizon Retail Mart â€” Main Branch',
     category: 'Supermarket' as const,
     locationCity: 'Lagos',
     address: '45 Admiralty Way, Lekki',
@@ -5611,7 +5868,7 @@ test('Phase 6 Cloud Functions Client-to-Server Integration: persistLiveBusinessA
     status: 'active' as const,
     terminalId: 'TERM-HRM01',
     taxRatePercent: 7.5,
-    receiptHeaderNote: 'Horizon Retail Mart — Official Receipt',
+    receiptHeaderNote: 'Horizon Retail Mart â€” Official Receipt',
     receiptFooterNote: 'Thank you for your patronage',
     createdAt: '2026-10-27',
     pendingSyncCount: 0,

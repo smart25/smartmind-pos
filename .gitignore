@@ -8,7 +8,9 @@ node_modules/
 functions/node_modules/
 
 # Build output
-build/
+build/*
+!build/icon.png
+!build/icon.ico
 dist/
 dist-electron/
 release/
@@ -46,3 +48,13 @@ desktop.ini
 # Local backups
 backups/
 *-backup/
+*.zip
+*.tar.gz
+*.bak
+*.pre-*-backup
+*.backup
+SmartMind_Printer_Backup_*/
+staging-safety-backup-*/
+SmartMind_firebase_*
+step*.txt
+receipt-return-*.txt

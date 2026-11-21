@@ -1,13 +1,13 @@
 "use strict";
 /**
- * SmartMind POS — Phase 6: Production Cloud Functions (2nd Gen / Node.js 22)
+ * SmartMind POS â€” Phase 6: Production Cloud Functions (2nd Gen / Node.js 22)
  *
  * Project ID: gen-lang-client-0985802946
  * Named Firestore Database ID: ai-studio-smartmindpos-3ebff8f1-fed5-4111-b7db-f027e942fbb4
  *
  * CRITICAL SECURITY INVARIANTS ENFORCED BY THIS MODULE:
  * 1. Explicit Named Database Binding: Always connects to `ai-studio-smartmindpos-3ebff8f1-fed5-4111-b7db-f027e942fbb4`
- *    via `getFirestore(app, NAMED_FIRESTORE_DATABASE_ID)` — never assumes `(default)`.
+ *    via `getFirestore(app, NAMED_FIRESTORE_DATABASE_ID)` â€” never assumes `(default)`.
  * 2. Trusted Server-Side Identity & Role Verification: Never trusts client-provided roles or claims.
  *    Always loads `/users/{request.auth.uid}` from the named Firestore database.
  * 3. Strict Platform Administrator Separation: Platform Admin can provision businesses and primary owners
@@ -41,6 +41,9 @@ exports.isValidEntityId = isValidEntityId;
 exports.isSyntheticServerOwnerId = isSyntheticServerOwnerId;
 exports.isValidEmailAddress = isValidEmailAddress;
 exports.isQuarantinedOrDemoOperation = isQuarantinedOrDemoOperation;
+exports.executeStartPlatformAdminSupportSession = executeStartPlatformAdminSupportSession;
+exports.executeEndPlatformAdminSupportSession = executeEndPlatformAdminSupportSession;
+exports.executeGetPlatformAdminSupportSession = executeGetPlatformAdminSupportSession;
 exports.executeProvisionBusinessAndPrimaryOwner = executeProvisionBusinessAndPrimaryOwner;
 exports.executeRepairBusinessOwnerAuth = executeRepairBusinessOwnerAuth;
 exports.executeSyncPosOperation = executeSyncPosOperation;
@@ -48,6 +51,7 @@ exports.executeInviteAuthorizedStaff = executeInviteAuthorizedStaff;
 exports.executeSetTenantStatus = executeSetTenantStatus;
 exports.getOrInitServerAdmin = getOrInitServerAdmin;
 exports.wrapCallable = wrapCallable;
+exports.executeResetUserPassword = executeResetUserPassword;
 exports.PRODUCTION_FIREBASE_PROJECT_ID = 'gen-lang-client-0985802946';
 exports.EXPECTED_FIREBASE_PROJECT_ID = exports.PRODUCTION_FIREBASE_PROJECT_ID;
 exports.STAGING_FIREBASE_PROJECT_ID = 'smartmind-pos-staging';
@@ -501,6 +505,245 @@ async function assertCallerIsActivePlatformAdmin(tx, auth) {
     return callerProfile;
 }
 // ============================================================================
+// PLATFORM ADMIN SUPPORT SESSION LIFECYCLE
+// ============================================================================
+const PLATFORM_SUPPORT_SESSION_DURATION_MS = 30 * 60 * 1000;
+async function executeStartPlatformAdminSupportSession(dbDriver, auth, input) {
+    const expectedDatabaseId = resolveCurrentEnvironment().databaseId;
+    if (dbDriver.databaseId !== expectedDatabaseId) {
+        throw new Error(`DATABASE_CONFIG_MISMATCH: Expected "${expectedDatabaseId}", received "${dbDriver.databaseId}".`);
+    }
+    const verifiedAuth = assertVerifiedAuthContext(auth);
+    if (!input ||
+        !isValidEntityId(input.businessId) ||
+        !isValidEntityId(input.shopId) ||
+        input.businessId === 'PLATFORM') {
+        throw new Error('INVALID_ARGUMENT: A valid tenant businessId and shopId are required.');
+    }
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + PLATFORM_SUPPORT_SESSION_DURATION_MS).toISOString();
+    const supportSessionId = `support-${verifiedAuth.uid}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+    return dbDriver.runTransaction(async (tx) => {
+        const callerAdmin = await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
+        const businessPath = `businesses/${input.businessId}`;
+        const shopPath = `businesses/${input.businessId}/shops/${input.shopId}`;
+        const sessionPath = `platform_support_sessions/${verifiedAuth.uid}`;
+        const business = await tx.getDoc(businessPath);
+        if (!business || business.status !== 'active') {
+            throw new Error('NOT_FOUND: The requested business does not exist or is not active.');
+        }
+        const shop = await tx.getDoc(shopPath);
+        if (!shop ||
+            shop.businessId !== input.businessId ||
+            shop.status !== 'active') {
+            throw new Error('NOT_FOUND: The requested shop does not exist, is not active, or does not belong to this business.');
+        }
+        const existingSession = await tx.getDoc(sessionPath);
+        if (existingSession?.status === 'active' &&
+            typeof existingSession.expiresAt === 'string' &&
+            Date.parse(existingSession.expiresAt) > now.getTime()) {
+            throw new Error('SUPPORT_SESSION_ALREADY_ACTIVE: End the existing support session before opening another business or shop.');
+        }
+        const adminName = String(callerAdmin.fullName || 'Platform Administrator').slice(0, 120);
+        const sessionRecord = {
+            id: supportSessionId,
+            sessionId: supportSessionId,
+            adminUid: verifiedAuth.uid,
+            adminEmail: String(verifiedAuth.token.email || '').trim().toLowerCase(),
+            adminName,
+            businessId: input.businessId,
+            shopId: input.shopId,
+            status: 'active',
+            createdAt: nowIso,
+            lastActivityAt: nowIso,
+            expiresAt,
+            schemaVersion: 1,
+        };
+        const auditEventId = `support-start-${supportSessionId}`;
+        const auditEvent = {
+            id: auditEventId,
+            businessId: input.businessId,
+            shopId: input.shopId,
+            userId: verifiedAuth.uid,
+            userName: adminName,
+            action: 'platform_admin_support_started',
+            entityType: 'shop',
+            entityId: input.shopId,
+            detailsJson: JSON.stringify({
+                supportSessionId,
+                adminUid: verifiedAuth.uid,
+                adminEmail: sessionRecord.adminEmail,
+                businessId: input.businessId,
+                shopId: input.shopId,
+                expiresAt,
+            }),
+            createdAt: nowIso,
+        };
+        const platformAudit = {
+            id: auditEventId,
+            actorUid: verifiedAuth.uid,
+            actorEmail: sessionRecord.adminEmail,
+            action: 'support_session_started',
+            businessId: input.businessId,
+            shopId: input.shopId,
+            supportSessionId,
+            createdAt: nowIso,
+            detailsJson: JSON.stringify({
+                businessName: business.name || '',
+                shopName: shop.name || '',
+            }),
+        };
+        tx.setDoc(sessionPath, sessionRecord);
+        tx.setDoc(`businesses/${input.businessId}/audit_events/${auditEventId}`, auditEvent);
+        tx.setDoc(`platform_audit_logs/${auditEventId}`, platformAudit);
+        return {
+            status: 'active',
+            supportSessionId,
+            adminUid: verifiedAuth.uid,
+            businessId: input.businessId,
+            shopId: input.shopId,
+            createdAt: nowIso,
+            expiresAt,
+        };
+    });
+}
+async function executeEndPlatformAdminSupportSession(dbDriver, auth, input) {
+    const expectedDatabaseId = resolveCurrentEnvironment().databaseId;
+    if (dbDriver.databaseId !== expectedDatabaseId) {
+        throw new Error(`DATABASE_CONFIG_MISMATCH: Expected "${expectedDatabaseId}", received "${dbDriver.databaseId}".`);
+    }
+    const verifiedAuth = assertVerifiedAuthContext(auth);
+    if (!input || !isValidEntityId(input.supportSessionId)) {
+        throw new Error('INVALID_ARGUMENT: A valid supportSessionId is required.');
+    }
+    const nowIso = new Date().toISOString();
+    return dbDriver.runTransaction(async (tx) => {
+        const callerAdmin = await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
+        const sessionPath = `platform_support_sessions/${verifiedAuth.uid}`;
+        const session = await tx.getDoc(sessionPath);
+        if (!session ||
+            session.adminUid !== verifiedAuth.uid ||
+            session.sessionId !== input.supportSessionId) {
+            throw new Error('NOT_FOUND: The requested support session does not belong to this administrator.');
+        }
+        if (session.status !== 'active') {
+            throw new Error('FAILED_PRECONDITION: This support session is not active.');
+        }
+        const businessId = String(session.businessId || '');
+        const shopId = String(session.shopId || '');
+        if (!isValidEntityId(businessId) || !isValidEntityId(shopId)) {
+            throw new Error('FAILED_PRECONDITION: The stored support session has an invalid business or shop scope.');
+        }
+        const adminName = String(callerAdmin.fullName || 'Platform Administrator').slice(0, 120);
+        const endedSession = {
+            ...session,
+            status: 'ended',
+            endedAt: nowIso,
+            endedByUid: verifiedAuth.uid,
+            updatedAt: nowIso,
+        };
+        const auditEventId = `support-end-${input.supportSessionId}`;
+        const auditEvent = {
+            id: auditEventId,
+            businessId,
+            shopId,
+            userId: verifiedAuth.uid,
+            userName: adminName,
+            action: 'platform_admin_support_ended',
+            entityType: 'shop',
+            entityId: shopId,
+            detailsJson: JSON.stringify({
+                supportSessionId: input.supportSessionId,
+                adminUid: verifiedAuth.uid,
+                businessId,
+                shopId,
+            }),
+            createdAt: nowIso,
+        };
+        const platformAudit = {
+            id: auditEventId,
+            actorUid: verifiedAuth.uid,
+            actorEmail: String(verifiedAuth.token.email || '').toLowerCase(),
+            action: 'support_session_ended',
+            businessId,
+            shopId,
+            supportSessionId: input.supportSessionId,
+            createdAt: nowIso,
+        };
+        tx.setDoc(sessionPath, endedSession);
+        tx.setDoc(`businesses/${businessId}/audit_events/${auditEventId}`, auditEvent);
+        tx.setDoc(`platform_audit_logs/${auditEventId}`, platformAudit);
+        return {
+            status: 'ended',
+            supportSessionId: input.supportSessionId,
+            adminUid: verifiedAuth.uid,
+            businessId,
+            shopId,
+            createdAt: String(session.createdAt || ''),
+            endedAt: nowIso,
+        };
+    });
+}
+/**
+ * Read-only recovery of an existing Platform Admin support session.
+ * Never creates, renews, or modifies a session.
+ */
+async function executeGetPlatformAdminSupportSession(dbDriver, auth) {
+    const expectedDatabaseId = resolveCurrentEnvironment().databaseId;
+    if (dbDriver.databaseId !== expectedDatabaseId) {
+        throw new Error(`DATABASE_CONFIG_MISMATCH: Expected "${expectedDatabaseId}", received "${dbDriver.databaseId}".`);
+    }
+    const verifiedAuth = assertVerifiedAuthContext(auth);
+    return dbDriver.runTransaction(async (tx) => {
+        await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
+        const session = await tx.getDoc(`platform_support_sessions/${verifiedAuth.uid}`);
+        if (!session) {
+            return null;
+        }
+        // Fail closed for ended, malformed, or mismatched sessions.
+        if (session.status !== 'active' ||
+            session.adminUid !== verifiedAuth.uid ||
+            typeof session.sessionId !== 'string' ||
+            !isValidEntityId(session.sessionId)) {
+            return null;
+        }
+        const businessId = String(session.businessId || '');
+        const shopId = String(session.shopId || '');
+        const expiresAtMs = typeof session.expiresAt === 'string'
+            ? Date.parse(session.expiresAt)
+            : NaN;
+        if (!isValidEntityId(businessId) ||
+            businessId === exports.PLATFORM_ADMIN_BUSINESS_SENTINEL ||
+            !isValidEntityId(shopId) ||
+            !Number.isFinite(expiresAtMs) ||
+            expiresAtMs <= Date.now()) {
+            return null;
+        }
+        const business = await tx.getDoc(`businesses/${businessId}`);
+        if (!business || business.status !== 'active') {
+            return null;
+        }
+        const shop = await tx.getDoc(`businesses/${businessId}/shops/${shopId}`);
+        if (!shop ||
+            shop.status !== 'active' ||
+            shop.businessId !== businessId) {
+            return null;
+        }
+        return {
+            status: 'active',
+            supportSessionId: session.sessionId,
+            adminUid: verifiedAuth.uid,
+            businessId,
+            shopId,
+            createdAt: String(session.createdAt || ''),
+            expiresAt: String(session.expiresAt),
+        };
+    });
+}
+// ============================================================================
 // 1. PRIVILEGED BUSINESS, FIRST SHOP & PRIMARY OWNER PROVISIONING
 // ============================================================================
 async function executeProvisionBusinessAndPrimaryOwner(dbDriver, authDirectory, auth, input) {
@@ -740,7 +983,7 @@ async function executeProvisionBusinessAndPrimaryOwner(dbDriver, authDirectory, 
             .trim()
             .toUpperCase()
             .slice(0, 30);
-        const firstShopName = (input.initialShopName || `${cleanBusinessName} — Main Branch`)
+        const firstShopName = (input.initialShopName || `${cleanBusinessName} â€” Main Branch`)
             .trim()
             .slice(0, 140);
         const firstShopCategory = (input.initialShopCategory || 'Supermarket')
@@ -777,7 +1020,7 @@ async function executeProvisionBusinessAndPrimaryOwner(dbDriver, authDirectory, 
             primaryPhone: cleanPhone,
             headquartersAddress: cleanAddress,
             currencyCode: (input.currencyCode || 'NGN').trim().slice(0, 3),
-            currencySymbol: (input.currencySymbol || '₦').trim().slice(0, 5),
+            currencySymbol: (input.currencySymbol || 'â‚¦').trim().slice(0, 5),
             defaultTaxRatePercent: taxRate,
             status: 'active',
             ...(input.notes ? { notes: input.notes.trim().slice(0, 500) } : {}),
@@ -798,7 +1041,7 @@ async function executeProvisionBusinessAndPrimaryOwner(dbDriver, authDirectory, 
             status: 'active',
             terminalId: `TERM-${firstShopCode.replace(/[^A-Z0-9]/g, '')}`,
             taxRatePercent: taxRate,
-            receiptHeaderNote: `${firstShopName} — Official Receipt`,
+            receiptHeaderNote: `${firstShopName} â€” Official Receipt`,
             receiptFooterNote: 'Thank you for your patronage',
             schemaVersion: 6,
             createdAt: nowIso,
@@ -1252,7 +1495,7 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
             errorMessage: 'INVALID_ARGUMENT: operationId, idempotencyKey, businessId, shopId, and entityId must be valid identifiers.',
         };
     }
-    // STEP 0: Hard Quarantine & Demo Guard — never allow quarantined or pre-Firebase test sales into Firestore
+    // STEP 0: Hard Quarantine & Demo Guard â€” never allow quarantined or pre-Firebase test sales into Firestore
     const quarantineCheck = isQuarantinedOrDemoOperation({
         operationId: req.operationId,
         entityId: req.entityId,
@@ -1288,16 +1531,72 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                 errorMessage: 'FORBIDDEN: Authenticated user account is suspended.',
             };
         }
-        // Platform Administrator is strictly separated from tenant operational data
-        if (callerProfile.role === 'platform_admin') {
+        // PLATFORM ADMIN SUPPORT SESSION AUTHORIZATION
+        const isPlatformAdmin = callerProfile.role === 'platform_admin';
+        let platformSupportSession = null;
+        if (isPlatformAdmin) {
+            try {
+                await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
+            }
+            catch {
+                return {
+                    outcome: 'rejected_unauthorized',
+                    status: 'failed',
+                    databaseId: dbDriver.databaseId,
+                    errorMessage: 'FORBIDDEN_ROLE_BOUNDARY: Platform Administrator identity is not authorized or active.',
+                };
+            }
+            if (typeof req.supportSessionId !== 'string' ||
+                !isValidEntityId(req.supportSessionId)) {
+                return {
+                    outcome: 'rejected_unauthorized',
+                    status: 'failed',
+                    databaseId: dbDriver.databaseId,
+                    errorMessage: 'FORBIDDEN_SUPPORT_SESSION_REQUIRED: An active Platform Admin support session is required.',
+                };
+            }
+            platformSupportSession = await tx.getDoc(`platform_support_sessions/${verifiedAuth.uid}`);
+            if (!platformSupportSession ||
+                platformSupportSession.adminUid !== verifiedAuth.uid ||
+                platformSupportSession.sessionId !== req.supportSessionId ||
+                platformSupportSession.status !== 'active' ||
+                typeof platformSupportSession.expiresAt !== 'string' ||
+                !Number.isFinite(Date.parse(platformSupportSession.expiresAt)) ||
+                Date.parse(platformSupportSession.expiresAt) <= Date.now() ||
+                platformSupportSession.businessId !== req.businessId ||
+                platformSupportSession.shopId !== req.shopId) {
+                return {
+                    outcome: 'rejected_unauthorized',
+                    status: 'failed',
+                    databaseId: dbDriver.databaseId,
+                    errorMessage: 'FORBIDDEN_INVALID_SUPPORT_SESSION: Support session is expired, ended, or outside its authorized business and shop.',
+                };
+            }
+            const supportedSupportOperations = (req.entityType === 'sale' &&
+                (req.operationType === 'create' || req.operationType === 'return')) ||
+                (req.entityType === 'product' &&
+                    (req.operationType === 'create' || req.operationType === 'update')) ||
+                (req.entityType === 'inventory_movement' &&
+                    (req.operationType === 'create' || req.operationType === 'adjust'));
+            if (!supportedSupportOperations) {
+                return {
+                    outcome: 'rejected_unauthorized',
+                    status: 'failed',
+                    databaseId: dbDriver.databaseId,
+                    errorMessage: 'FORBIDDEN_SUPPORT_OPERATION: This operation is outside the authorized Platform Admin support scope.',
+                };
+            }
+        }
+        else if (req.supportSessionId !== undefined) {
             return {
                 outcome: 'rejected_unauthorized',
                 status: 'failed',
                 databaseId: dbDriver.databaseId,
-                errorMessage: 'FORBIDDEN_ROLE_BOUNDARY: Platform Administrator does not have access to tenant shop sales, stock, or synchronization.',
+                errorMessage: 'FORBIDDEN_SUPPORT_SESSION: Non-administrator accounts cannot submit Platform Admin support sessions.',
             };
         }
-        if (callerProfile.businessId !== req.businessId) {
+        if (!isPlatformAdmin &&
+            callerProfile.businessId !== req.businessId) {
             return {
                 outcome: 'rejected_unauthorized',
                 status: 'failed',
@@ -1326,7 +1625,8 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
         const assignedShops = Array.isArray(callerProfile.assignedShopIds)
             ? callerProfile.assignedShopIds
             : [];
-        if (callerProfile.role !== 'business_owner' &&
+        if (!isPlatformAdmin &&
+            callerProfile.role !== 'business_owner' &&
             !assignedShops.includes(req.shopId)) {
             return {
                 outcome: 'rejected_unauthorized',
@@ -1335,7 +1635,9 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                 errorMessage: `FORBIDDEN_UNASSIGNED_SHOP: User (${callerProfile.role}) is not assigned to shop "${req.shopId}".`,
             };
         }
-        if (req.entityType !== 'sale' && callerProfile.role === 'cashier') {
+        if (!isPlatformAdmin &&
+            req.entityType !== 'sale' &&
+            callerProfile.role === 'cashier') {
             return {
                 outcome: 'rejected_unauthorized',
                 status: 'failed',
@@ -1343,7 +1645,7 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                 errorMessage: 'FORBIDDEN_INSUFFICIENT_ROLE: Cashiers are only authorized to synchronize POS sales.',
             };
         }
-        // STEP 2: Idempotency check — prevent duplicate sale creation or double stock deduction
+        // STEP 2: Idempotency check â€” prevent duplicate sale creation or double stock deduction
         const syncOpPath = `businesses/${req.businessId}/shops/${req.shopId}/sync_operations/${req.idempotencyKey}`;
         const existingSyncOp = await tx.getDoc(syncOpPath);
         if (existingSyncOp) {
@@ -1370,18 +1672,6 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
         const nowIso = new Date().toISOString();
         // STEP 3: Sale Creation with Granular Permission, Identity, Arithmetic Validation & Atomic Stock Deduction
         if (req.entityType === 'sale' && req.operationType === 'create') {
-            if (!callerHasPermission(callerProfile, [
-                'process_sales',
-                'process_sale',
-                'pos_checkout',
-            ])) {
-                return {
-                    outcome: 'rejected_unauthorized',
-                    status: 'failed',
-                    databaseId: dbDriver.databaseId,
-                    errorMessage: 'FORBIDDEN_MISSING_PERMISSION: Caller does not have permission (process_sales) to synchronize POS sales.',
-                };
-            }
             const sale = req.payload?.sale;
             const items = Array.isArray(req.payload?.items) ? req.payload.items : [];
             const payment = req.payload?.payment;
@@ -1393,27 +1683,66 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                     conflictReason: 'Malformed sale sync payload: missing sale header or line items.',
                 };
             }
-            if (sale.business_id !== req.businessId ||
-                sale.shop_id !== req.shopId ||
-                sale.id !== req.entityId) {
+            // SECURITY: Validate sale identity and tenant scope.
+            if (sale.id !== req.entityId ||
+                sale.business_id !== req.businessId ||
+                sale.shop_id !== req.shopId) {
                 return {
                     outcome: 'rejected_unauthorized',
                     status: 'failed',
                     databaseId: dbDriver.databaseId,
-                    errorMessage: 'FORBIDDEN_PAYLOAD_SCOPE_MISMATCH: Sale payload identifiers do not match request scope.',
+                    errorMessage: 'FORBIDDEN_PAYLOAD_SCOPE_MISMATCH: Sale identity, business, or shop does not match the sync request.',
                 };
             }
-            // SEC-02: Enforce valid initial sale status ('completed') on creation
+            // SECURITY: Only completed sales may be created through POS synchronization.
             if (sale.status !== 'completed') {
                 return {
                     outcome: 'rejected_unauthorized',
                     status: 'failed',
                     databaseId: dbDriver.databaseId,
-                    errorMessage: 'FORBIDDEN_INVALID_INITIAL_SALE_STATUS: Newly synchronized sales must have status "completed".',
+                    errorMessage: 'FORBIDDEN_INVALID_INITIAL_SALE_STATUS: Only completed sales can be synchronized as new sales.',
                 };
             }
-            // SEC-02: Prevent cashier identity spoofing (must match caller UID unless Business Owner syncing shop queue)
-            if (callerProfile.role !== 'business_owner' &&
+            let saleOperatorProfile = callerProfile;
+            // Platform Admin Support Mode:
+            // Verify the original cashier from the server-side user profile.
+            // Never grant the Platform Admin the cashier's permissions.
+            if (isPlatformAdmin) {
+                if (typeof sale.cashier_user_id !== 'string' ||
+                    !isValidEntityId(sale.cashier_user_id) ||
+                    sale.cashier_user_id === verifiedAuth.uid) {
+                    return {
+                        outcome: 'rejected_unauthorized',
+                        status: 'failed',
+                        databaseId: dbDriver.databaseId,
+                        errorMessage: 'FORBIDDEN_SUPPORT_CASHIER_IDENTITY: Support-synchronized sale must identify a valid original business operator.',
+                    };
+                }
+                const originalCashierProfile = await tx.getDoc(`users/${sale.cashier_user_id}`);
+                if (!originalCashierProfile ||
+                    originalCashierProfile.status !== 'active' ||
+                    originalCashierProfile.businessId !== req.businessId ||
+                    !['cashier', 'shop_manager', 'business_owner'].includes(originalCashierProfile.role)) {
+                    return {
+                        outcome: 'rejected_unauthorized',
+                        status: 'failed',
+                        databaseId: dbDriver.databaseId,
+                        errorMessage: 'FORBIDDEN_SUPPORT_CASHIER_PROFILE: Original sale operator is missing, inactive, or outside the authorized business.',
+                    };
+                }
+                if (originalCashierProfile.role !== 'business_owner' &&
+                    (!Array.isArray(originalCashierProfile.assignedShopIds) ||
+                        !originalCashierProfile.assignedShopIds.includes(req.shopId))) {
+                    return {
+                        outcome: 'rejected_unauthorized',
+                        status: 'failed',
+                        databaseId: dbDriver.databaseId,
+                        errorMessage: 'FORBIDDEN_SUPPORT_CASHIER_SHOP: Original sale operator is not assigned to this shop.',
+                    };
+                }
+                saleOperatorProfile = originalCashierProfile;
+            }
+            else if (callerProfile.role !== 'business_owner' &&
                 sale.cashier_user_id !== verifiedAuth.uid) {
                 return {
                     outcome: 'rejected_unauthorized',
@@ -1422,9 +1751,22 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                     errorMessage: 'FORBIDDEN_CASHIER_IDENTITY_MISMATCH: Operator cannot synchronize a sale attributed to a different cashierUserId.',
                 };
             }
-            // SEC-06: Require discount permission when sale carries a non-zero discount
+            // Require the actual sale operator to have sales permission.
+            if (!callerHasPermission(saleOperatorProfile, [
+                'process_sales',
+                'process_sale',
+                'pos_checkout',
+            ])) {
+                return {
+                    outcome: 'rejected_unauthorized',
+                    status: 'failed',
+                    databaseId: dbDriver.databaseId,
+                    errorMessage: 'FORBIDDEN_MISSING_PERMISSION: Original sale operator does not have permission (process_sales) to synchronize POS sales.',
+                };
+            }
+            // Require the actual sale operator to have discount permission.
             if (Number(sale.discount_amount_kobo || 0) > 0 &&
-                !callerHasPermission(callerProfile, [
+                !callerHasPermission(saleOperatorProfile, [
                     'apply_discounts',
                     'apply_discount',
                 ])) {
@@ -1432,7 +1774,7 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                     outcome: 'rejected_unauthorized',
                     status: 'failed',
                     databaseId: dbDriver.databaseId,
-                    errorMessage: 'FORBIDDEN_MISSING_PERMISSION: Caller does not have permission (apply_discounts) to apply sale discounts.',
+                    errorMessage: 'FORBIDDEN_MISSING_PERMISSION: Original sale operator does not have permission (apply_discounts) to apply sale discounts.',
                 };
             }
             // Check if sale document already exists under entityId (secondary idempotency guard)
@@ -1509,7 +1851,7 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                     newQty: currentStock - line.quantity,
                 });
             }
-            // All stock checks passed — atomically deduct stock, record inventory movements, sale, payment, sync op, and audit event
+            // All stock checks passed â€” atomically deduct stock, record inventory movements, sale, payment, sync op, and audit event
             for (const itemUpdate of productDocsToUpdate) {
                 tx.setDoc(itemUpdate.path, {
                     ...itemUpdate.doc,
@@ -1628,6 +1970,139 @@ async function executeSyncPosOperation(dbDriver, auth, req) {
                     ackId,
                 }),
                 createdAt: nowIso,
+            });
+            return {
+                outcome: 'acknowledged',
+                status: 'synced',
+                databaseId: dbDriver.databaseId,
+                ackId,
+                syncedAt: nowIso,
+                isDuplicateReplay: false,
+            };
+        }
+        // STEP 3B: Server-Authoritative Receipt Return & Stock Restoration
+        if (req.entityType === 'sale' && req.operationType === 'return') {
+            const saleId = req.entityId;
+            const saleDocPath = `businesses/${req.businessId}/shops/${req.shopId}/sales/${saleId}`;
+            const existingSale = await tx.getDoc(saleDocPath);
+            if (!existingSale) {
+                return {
+                    outcome: 'conflict_requires_review',
+                    status: 'requires_review',
+                    databaseId: dbDriver.databaseId,
+                    conflictReason: `Sale document "${saleId}" not found for return.`,
+                };
+            }
+            if (!isPlatformAdmin &&
+                !callerHasPermission(callerProfile, ['process_returns']) &&
+                !['shop_manager', 'business_owner'].includes(callerProfile.role)) {
+                return {
+                    outcome: 'rejected_unauthorized',
+                    status: 'failed',
+                    databaseId: dbDriver.databaseId,
+                    errorMessage: 'FORBIDDEN: User lacks permission to process receipt returns.',
+                };
+            }
+            const returnPayload = req.payload?.saleReturn || req.payload;
+            const returnedItems = Array.isArray(returnPayload?.returnedItems) ? returnPayload.returnedItems : [];
+            const updatedSale = returnPayload?.updatedSale;
+            const reason = String(returnPayload?.reason || 'Customer receipt return').slice(0, 200);
+            if (!updatedSale || returnedItems.length === 0) {
+                return {
+                    outcome: 'conflict_requires_review',
+                    status: 'requires_review',
+                    databaseId: dbDriver.databaseId,
+                    conflictReason: 'Malformed receipt return payload: missing updatedSale or returnedItems.',
+                };
+            }
+            // Restore product stock and record inventory movement for each returned item
+            for (const retItem of returnedItems) {
+                const prodId = retItem.productId || retItem.product_id;
+                const returnQty = Math.floor(Number(retItem.returnedQuantity || 0));
+                if (!prodId || returnQty <= 0)
+                    continue;
+                const prodPath = `businesses/${req.businessId}/shops/${req.shopId}/products/${prodId}`;
+                const prodDoc = await tx.getDoc(prodPath);
+                if (prodDoc) {
+                    const prevStock = Number(prodDoc.stockQuantity || 0);
+                    const newStock = prevStock + returnQty;
+                    tx.setDoc(prodPath, {
+                        ...prodDoc,
+                        stockQuantity: newStock,
+                        updatedAt: nowIso,
+                    });
+                    const movId = `mov-ret-${req.idempotencyKey}-${prodId}`;
+                    tx.setDoc(`businesses/${req.businessId}/shops/${req.shopId}/inventory_movements/${movId}`, {
+                        id: movId,
+                        shopId: req.shopId,
+                        businessId: req.businessId,
+                        productId: prodId,
+                        productName: String(retItem.productName || prodDoc.name || 'Returned Item').slice(0, 160),
+                        productSku: String(retItem.sku || prodDoc.sku || '').slice(0, 80),
+                        type: 'return_in',
+                        quantityDelta: returnQty,
+                        previousQuantity: prevStock,
+                        newQuantity: newStock,
+                        reason: `Receipt #${existingSale.receiptNumber} Return: ${reason}`,
+                        referenceId: saleId,
+                        performedByUserId: verifiedAuth.uid,
+                        performedByName: String(callerProfile.fullName || 'Operator').slice(0, 120),
+                        schemaVersion: 6,
+                        createdAt: nowIso,
+                    });
+                }
+            }
+            // Update the sale document in Cloud Firestore with reduced totals and line items
+            const newSubtotalKobo = Math.round(Number(updatedSale.subtotal || 0) * 100);
+            const newDiscountKobo = Math.round(Number(updatedSale.discountAmount || 0) * 100);
+            const newTaxKobo = Math.round(Number(updatedSale.taxAmount || 0) * 100);
+            const newTotalKobo = Math.round(Number(updatedSale.totalAmount || 0) * 100);
+            const isFullRefund = newTotalKobo <= 0 || (Array.isArray(updatedSale.items) && updatedSale.items.every((it) => it.quantity === 0));
+            const updatedSaleDoc = {
+                ...existingSale,
+                subtotalKobo: newSubtotalKobo,
+                discountAmountKobo: newDiscountKobo,
+                taxAmountKobo: newTaxKobo,
+                totalAmountKobo: newTotalKobo,
+                status: isFullRefund ? 'refunded' : 'completed',
+                notes: `${existingSale.notes ? existingSale.notes + ' | ' : ''}Return: ${reason}`.slice(0, 500),
+                items: updatedSale.items,
+                updatedAt: nowIso,
+            };
+            tx.setDoc(saleDocPath, updatedSaleDoc);
+            // Record audit event
+            const auditId = `aud-return-${req.idempotencyKey}`;
+            tx.setDoc(`businesses/${req.businessId}/audit_events/${auditId}`, {
+                id: auditId,
+                businessId: req.businessId,
+                shopId: req.shopId,
+                userId: verifiedAuth.uid,
+                userName: String(callerProfile.fullName || 'Operator').slice(0, 120),
+                action: 'receipt_return_processed',
+                entityType: 'sale',
+                entityId: saleId,
+                detailsJson: JSON.stringify({
+                    receiptNumber: existingSale.receiptNumber,
+                    returnedItemsCount: returnedItems.length,
+                    previousTotalKobo: existingSale.totalAmountKobo,
+                    newTotalKobo,
+                    reason,
+                }),
+                createdAt: nowIso,
+            });
+            const ackId = `ack-${req.idempotencyKey}-${Date.now()}`;
+            tx.setDoc(syncOpPath, {
+                id: req.idempotencyKey,
+                businessId: req.businessId,
+                shopId: req.shopId,
+                entityType: req.entityType,
+                entityId: req.entityId,
+                operationType: req.operationType,
+                actorUserId: verifiedAuth.uid,
+                processedAt: nowIso,
+                outcome: 'acknowledged',
+                ackId,
+                schemaVersion: 6,
             });
             return {
                 outcome: 'acknowledged',
@@ -1902,8 +2377,33 @@ async function executeInviteAuthorizedStaff(dbDriver, auth, input, authDirectory
         }
         const isAuthorizedOwner = caller.role === 'business_owner' && caller.businessId === input.businessId;
         const isAuthorizedAdmin = caller.role === 'platform_admin';
+        let platformSupportSession = null;
         if (isAuthorizedAdmin) {
             await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
+            if (typeof input.supportSessionId !== 'string' ||
+                !isValidEntityId(input.supportSessionId)) {
+                throw new Error('PERMISSION_DENIED: Platform Admin staff invitations require an active support session.');
+            }
+            platformSupportSession = await tx.getDoc(`platform_support_sessions/${verifiedAuth.uid}`);
+            if (!platformSupportSession ||
+                platformSupportSession.adminUid !== verifiedAuth.uid ||
+                platformSupportSession.sessionId !== input.supportSessionId ||
+                platformSupportSession.status !== 'active' ||
+                typeof platformSupportSession.expiresAt !== 'string' ||
+                !Number.isFinite(Date.parse(platformSupportSession.expiresAt)) ||
+                Date.parse(platformSupportSession.expiresAt) <= Date.now() ||
+                platformSupportSession.businessId !== input.businessId ||
+                !isValidEntityId(platformSupportSession.shopId)) {
+                throw new Error('PERMISSION_DENIED: The support session is invalid, expired, or does not authorize this business.');
+            }
+            if (!Array.isArray(input.assignedShopIds) ||
+                input.assignedShopIds.length !== 1 ||
+                input.assignedShopIds[0] !== platformSupportSession.shopId) {
+                throw new Error('PERMISSION_DENIED: Platform Admin staff invitations must be restricted to the active support shop.');
+            }
+        }
+        if (!isAuthorizedOwner && !isAuthorizedAdmin) {
+            throw new Error('PERMISSION_DENIED: Only the Business Owner of this business or a Platform Administrator can provision staff.');
         }
         if (!isAuthorizedOwner && !isAuthorizedAdmin) {
             throw new Error('PERMISSION_DENIED: Only the Business Owner of this business or a Platform Administrator can provision staff.');
@@ -2023,6 +2523,23 @@ async function executeInviteAuthorizedStaff(dbDriver, auth, input, authDirectory
             }),
             createdAt: nowIso,
         });
+        if (isAuthorizedAdmin && platformSupportSession) {
+            tx.setDoc(`platform_audit_logs/${auditId}`, {
+                id: auditId,
+                actorUid: verifiedAuth.uid,
+                actorEmail: String(verifiedAuth.token.email || '').trim().toLowerCase(),
+                action: 'support_staff_invited',
+                businessId: input.businessId,
+                shopId: platformSupportSession.shopId,
+                supportSessionId: platformSupportSession.sessionId,
+                targetStaffUid: staffUid,
+                targetStaffEmail: cleanEmail,
+                targetStaffRole: input.role,
+                assignedShopIds: dedupedAssignedShopIds,
+                idempotencyKey: input.idempotencyKey,
+                createdAt: nowIso,
+            });
+        }
         return { status: 'created', isIdempotentReplay: false, staffUser: staffDoc };
     });
 }
@@ -2285,6 +2802,7 @@ function createFirebaseAdminDrivers() {
                 const created = await adminAuth.createUser({
                     email: cleanEmail,
                     displayName: cleanName,
+                    ...(params.password?.trim() ? { password: params.password.trim() } : {}),
                     emailVerified: params.emailVerified ?? false,
                     disabled: params.disabled ?? false,
                 });
@@ -2309,6 +2827,22 @@ function createFirebaseAdminDrivers() {
                 }
                 throw err;
             }
+        },
+        async updateUser(uid, params) {
+            const cleanPassword = params.password?.trim();
+            const updated = await adminAuth.updateUser(uid, {
+                ...(cleanPassword ? { password: cleanPassword } : {}),
+                ...(params.emailVerified !== undefined ? { emailVerified: params.emailVerified } : {}),
+                ...(params.displayName ? { displayName: params.displayName } : {}),
+                ...(params.disabled !== undefined ? { disabled: params.disabled } : {}),
+            });
+            return {
+                uid: updated.uid,
+                email: updated.email || '',
+                emailVerified: Boolean(updated.emailVerified),
+                disabled: Boolean(updated.disabled),
+                displayName: updated.displayName || '',
+            };
         },
     };
     return { dbDriver, authDirectory };
@@ -2373,6 +2907,71 @@ exports.CLOUD_FUNCTIONS_MANIFEST = {
         'syncShopOperation',
         'inviteAuthorizedStaff',
         'setTenantStatus',
+        'resetUserPassword',
     ],
 };
+async function executeResetUserPassword(dbDriver, authDirectory, auth, input) {
+    const verifiedAuth = assertVerifiedAuthContext(auth);
+    const cleanEmail = (input.targetEmail || '').trim().toLowerCase();
+    const cleanPassword = (input.newPassword || '').trim();
+    if (!isValidEmailAddress(cleanEmail)) {
+        throw new Error('INVALID_ARGUMENT: A valid targetEmail is required.');
+    }
+    if (!cleanPassword || cleanPassword.length < 6) {
+        throw new Error('INVALID_ARGUMENT: New password must be at least 6 characters long.');
+    }
+    if (!authDirectory || typeof authDirectory.updateUser !== 'function') {
+        throw new Error('FIREBASE_ADMIN_UNAVAILABLE: Authentication service is required to update passwords.');
+    }
+    return await dbDriver.runTransaction(async (tx) => {
+        const caller = await tx.getDoc(`users/${verifiedAuth.uid}`);
+        if (!caller || caller.status !== 'active') {
+            throw new Error('PERMISSION_DENIED: Active caller profile required.');
+        }
+        const isPlatformAdmin = caller.role === 'platform_admin';
+        const targetProfiles = await tx.queryDocsByField('users', 'email', cleanEmail);
+        const targetProfile = targetProfiles.find((u) => u.id === input.targetUserId) || targetProfiles[0];
+        if (!targetProfile) {
+            throw new Error(`NOT_FOUND: User with email "${cleanEmail}" was not found in the database.`);
+        }
+        const isOwnerOfSameBusiness = caller.role === 'business_owner' &&
+            caller.businessId === targetProfile.businessId;
+        const isSelf = caller.id === targetProfile.id || verifiedAuth.uid === targetProfile.id;
+        if (!isPlatformAdmin && !isOwnerOfSameBusiness && !isSelf) {
+            throw new Error("PERMISSION_DENIED: You do not have permission to reset this user's password.");
+        }
+        // Resolve or update auth user
+        let authUser = await authDirectory.getUserByEmail(cleanEmail);
+        if (!authUser && targetProfile.id) {
+            authUser = await authDirectory.getUserByUid(targetProfile.id);
+        }
+        if (authUser && typeof authDirectory.updateUser === 'function') {
+            await authDirectory.updateUser(authUser.uid, {
+                password: cleanPassword,
+                emailVerified: true,
+            });
+        }
+        else if (typeof authDirectory.createUser === 'function') {
+            authUser = await authDirectory.createUser({
+                email: cleanEmail,
+                displayName: targetProfile.fullName || cleanEmail.split('@')[0],
+                password: cleanPassword,
+                emailVerified: true,
+                disabled: false,
+            });
+        }
+        // Update user profile in Firestore
+        await tx.setDoc(`users/${targetProfile.id}`, {
+            ...targetProfile,
+            passwordSetupStatus: 'verified',
+            emailVerified: true,
+            updatedAt: new Date().toISOString(),
+        });
+        return {
+            success: true,
+            message: `Password updated successfully in Firebase Authentication for ${cleanEmail}.`,
+            targetUserId: targetProfile.id,
+        };
+    });
+}
 //# sourceMappingURL=core.js.map

@@ -28,6 +28,7 @@ import {
   canUserAccessView,
   formatCurrency,
   getShopDashboardMetrics,
+  getTodayYmd,
 } from '../utils/posCalculations';
 import { UserPasswordModal } from '../components/common/UserPasswordModal';
 
@@ -73,8 +74,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       ),
     [businessUsers, business.id]
   );
-  const metrics = getShopDashboardMetrics(shop, shopProducts, shopSales);
+  const todayYmd = getTodayYmd();
+  const metrics = getShopDashboardMetrics(shop, shopProducts, shopSales, todayYmd);
   const symbol = business.currencySymbol;
+
+  const todaysShopSales = React.useMemo(
+    () => shopSales.filter((s) => (s.createdAt || '').slice(0, 10) === todayYmd),
+    [shopSales, todayYmd]
+  );
 
   const lowStockProducts = shopProducts.filter(
     (p) => p.isActive && p.stockQuantity <= p.reorderLevel
@@ -147,8 +154,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <>
                   Displaying verified live figures for{' '}
                   <strong>{shop.name}</strong> ({shopProducts.length} SKU
-                  {shopProducts.length === 1 ? '' : 's'}, {shopSales.length}{' '}
-                  recorded sale{shopSales.length === 1 ? '' : 's'}).
+                  {shopProducts.length === 1 ? '' : 's'}, {todaysShopSales.length}{' '}
+                  sale{todaysShopSales.length === 1 ? '' : 's'} today, {shopSales.length} total).
                 </>
               )}
             </p>
@@ -205,7 +212,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         {/* 2. Number of Transactions */}
         <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>{isDemo ? 'Transactions (Demo)' : 'Transactions'}</span>
+            <span>Transactions</span>
             <ReceiptText className="w-4 h-4 text-slate-500" />
           </div>
           <p className="text-xl font-display font-bold font-mono tabular-nums text-slate-900 mt-2">
@@ -219,7 +226,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         {/* 3. Cash Sales */}
         <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>{isDemo ? 'Cash Sales (Demo)' : 'Cash Sales'}</span>
+            <span>Cash Sales</span>
             <Banknote className="w-4 h-4 text-emerald-600" />
           </div>
           <p className="text-xl font-display font-bold font-mono tabular-nums text-slate-900 mt-2">
@@ -297,11 +304,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <div>
                 <h2 className="text-sm font-display font-bold text-slate-900">
                   {isDemo
-                    ? 'Recent Shop Transactions (Demo Data)'
-                    : 'Recent Shop Transactions'}
+                    ? "Today's Shop Transactions (Demo Data)"
+                    : "Today's Shop Transactions"}
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Latest receipts recorded at {shop.name}
+                  Receipts recorded today ({todayYmd}) at {shop.name}
                 </p>
               </div>
               {(!currentUser || canUserAccessView(currentUser, 'sales')) && (
@@ -316,25 +323,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               )}
             </div>
 
-            {shopSales.length === 0 ? (
+            {todaysShopSales.length === 0 ? (
               <div className="p-8 text-center">
                 <p className="text-sm font-medium text-slate-700">
                   {isDemo
-                    ? 'No demonstration transactions recorded for this shop yet.'
-                    : 'No sales transactions recorded for this shop yet.'}
+                    ? `No demonstration transactions recorded for this shop today (${todayYmd}).`
+                    : `No sales transactions recorded for this shop today (${todayYmd}).`}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                  {shopProducts.length === 0 &&
-                    (!currentUser ||
-                      canUserAccessView(currentUser, 'inventory')) && (
-                      <button
-                        type="button"
-                        onClick={() => onNavigate('inventory')}
-                        className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
-                      >
-                        Add Your First Product
-                      </button>
-                    )}
                   <button
                     type="button"
                     onClick={() => onNavigate('pos')}
@@ -342,6 +338,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   >
                     {isDemo ? 'Create Demo Sale in POS' : 'Open Point of Sale'}
                   </button>
+                  {(!currentUser || canUserAccessView(currentUser, 'sales')) && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('sales')}
+                      className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg cursor-pointer"
+                    >
+                      View Past Sales History
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -360,7 +365,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs">
-                      {shopSales.slice(0, 6).map((sale) => (
+                      {todaysShopSales.slice(0, 8).map((sale) => (
                         <tr
                           key={sale.id}
                           className="hover:bg-slate-50/80 transition-colors"
@@ -369,7 +374,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                             {sale.receiptNumber}
                           </td>
                           <td className="py-3 px-3 font-mono tabular-nums text-slate-600 whitespace-nowrap">
-                            {sale.createdAt.replace('2026-10-21 ', '')}
+                            {sale.createdAt.includes(' ')
+                              ? sale.createdAt.split(' ').slice(1).join(' ')
+                              : sale.createdAt}
                           </td>
                           <td className="py-3 px-3 text-slate-700 whitespace-nowrap">
                             {sale.cashierName}
@@ -400,7 +407,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
                 {/* Mobile Card List (< sm) */}
                 <div className="sm:hidden divide-y divide-slate-100 text-xs">
-                  {shopSales.slice(0, 6).map((sale) => (
+                  {todaysShopSales.slice(0, 8).map((sale) => (
                     <div key={sale.id} className="p-3.5 space-y-2 hover:bg-slate-50/80 transition-colors">
                       <div className="flex items-center justify-between">
                         <span className="font-mono font-bold text-slate-900">{sale.receiptNumber}</span>
@@ -410,7 +417,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       </div>
                       <div className="flex items-center justify-between text-slate-500 text-[11px]">
                         <span>{sale.cashierName} · <span className="capitalize">{sale.paymentMethod.replace('_', ' ')}</span></span>
-                        <span className="font-mono">{sale.createdAt.replace('2026-10-21 ', '')}</span>
+                        <span className="font-mono">
+                          {sale.createdAt.includes(' ')
+                            ? sale.createdAt.split(' ').slice(1).join(' ')
+                            : sale.createdAt}
+                        </span>
                       </div>
                       <div className="pt-1 flex justify-end">
                         <button
@@ -436,7 +447,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div>
                 <h2 className="text-sm font-display font-bold text-slate-900">
-                  Sales Activity by Category (Demo Data)
+                  {isDemo
+                    ? 'Sales Activity by Category (Demo Data)'
+                    : 'Sales Activity by Category'}
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
                   Category contribution for {shop.name}
@@ -556,7 +569,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <section className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900">
               <Store className="w-4 h-4 text-emerald-700" />
-              <span>Shop Catalogue &amp; Valuation Summary (Demo)</span>
+              <span>Shop Catalogue &amp; Valuation Summary</span>
             </div>
             <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
               <div className="flex items-center justify-between">

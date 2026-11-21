@@ -44,7 +44,7 @@ interface ShopSelectionPageProps {
   allShops: Shop[];
   activeShopId: string | null;
   onSelectShop: (shopId: string) => void;
-  onCreateShop: (input: CreateShopInput) => Shop;
+  onCreateShop: (input: CreateShopInput) => Shop | Promise<Shop>;
   onOpenWorkspaceView?: (view: AppView, shopId?: string) => void;
   onSignOut: () => void;
   connectivity: ConnectivitySnapshot;
@@ -186,7 +186,7 @@ export const ShopSelectionPage: React.FC<ShopSelectionPageProps> = ({
     setCreateModalOpen(true);
   };
 
-  const handleCreateShopSubmit = (
+  const handleCreateShopSubmit = async (
     e: React.FormEvent,
     enterImmediately = false
   ) => {
@@ -206,7 +206,7 @@ export const ShopSelectionPage: React.FC<ShopSelectionPageProps> = ({
       return;
     }
 
-    const created = onCreateShop(payload);
+    const created = await onCreateShop(payload);
     setCreateModalOpen(false);
     setSimulateEmptyState(false);
     setSelectedId(created.id);

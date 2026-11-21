@@ -271,6 +271,8 @@ export class IndexedDbDatabaseAdapter implements DatabaseAdapter {
             selling_price_kobo: toMinorUnits(p.sellingPrice || 0),
             stock_quantity: p.stockQuantity ?? 0,
             reorder_level: p.reorderLevel ?? 5,
+            has_expiry: p.hasExpiry ? 1 : 0,
+            expiry_date: p.expiryDate || null,
             tax_exempt: p.taxExempt ? 1 : 0,
             is_active: p.isActive !== false ? 1 : 0,
             created_at: p.updatedAt || new Date().toISOString(),
