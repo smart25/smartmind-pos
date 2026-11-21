@@ -1393,8 +1393,9 @@ export function validateProductInput(
   if (!input.sku.trim()) {
     return { valid: false, error: 'SKU code is required.' };
   }
-  if (!input.barcode.trim()) {
-    return { valid: false, error: 'Barcode is required.' };
+  const effectiveBarcode = input.barcode?.trim() || input.sku.trim();
+  if (!effectiveBarcode) {
+    return { valid: false, error: 'Barcode or SKU code is required.' };
   }
   if (!input.categoryId.trim()) {
     return { valid: false, error: 'Please select a product category.' };
@@ -1430,16 +1431,19 @@ export function validateProductInput(
     };
   }
 
-  const duplicateBarcode = existingShopProducts.find(
-    (p) =>
-      p.id !== editingProductId &&
-      p.barcode.trim().toLowerCase() === input.barcode.trim().toLowerCase()
-  );
-  if (duplicateBarcode) {
-    return {
-      valid: false,
-      error: `Barcode "${input.barcode.trim()}" is already used by "${duplicateBarcode.name}" in this shop.`,
-    };
+  if (input.barcode && input.barcode.trim()) {
+    const duplicateBarcode = existingShopProducts.find(
+      (p) =>
+        p.id !== editingProductId &&
+        p.barcode &&
+        p.barcode.trim().toLowerCase() === input.barcode.trim().toLowerCase()
+    );
+    if (duplicateBarcode) {
+      return {
+        valid: false,
+        error: `Barcode "${input.barcode.trim()}" is already used by "${duplicateBarcode.name}" in this shop.`,
+      };
+    }
   }
 
   return { valid: true };

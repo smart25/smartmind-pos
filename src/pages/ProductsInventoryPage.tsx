@@ -31,7 +31,10 @@ import {
   Trash2,
   Calendar,
   Layers,
+  Scan,
+  Barcode,
 } from 'lucide-react';
+import { BarcodeCaptureModal } from '../components/inventory/BarcodeCaptureModal';
 import {
   downloadInventoryCsvTemplate,
   InventoryCsvParseResult,
@@ -191,6 +194,10 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
   );
   const [formError, setFormError] = useState<string | null>(null);
   const [inlineNotice, setInlineNotice] = useState<string | null>(null);
+
+  // Barcode Toggle & Capture Modal State
+  const [hasBarcodeToggle, setHasBarcodeToggle] = useState<boolean>(false);
+  const [barcodeScannerOpen, setBarcodeScannerOpen] = useState<boolean>(false);
 
   // Inline Create Category inside Add/Edit Product Modal
   const [showInlineCategoryForm, setShowInlineCategoryForm] = useState<boolean>(
@@ -582,11 +589,12 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
 
   const openAddProductModal = () => {
     setEditingProduct(null);
+    setHasBarcodeToggle(false);
     const nextNum = 100 + shopProducts.length + 1;
     setFormState({
       name: '',
       sku: `${shop.code.split('-')[0]}-ITM-${nextNum}`,
-      barcode: `61599000${nextNum}`,
+      barcode: '',
       categoryId: shopCategories[0]?.id ?? '',
       unit: shopUnits[0]?.name ?? 'Pack',
       costPrice: 1500,
@@ -603,10 +611,16 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
 
   const openEditProductModal = (product: Product) => {
     setEditingProduct(product);
+    const hasExistingBarcode = Boolean(
+      product.barcode &&
+      product.barcode.trim() !== '' &&
+      product.barcode.toLowerCase() !== 'none'
+    );
+    setHasBarcodeToggle(hasExistingBarcode);
     setFormState({
       name: product.name,
       sku: product.sku,
-      barcode: product.barcode,
+      barcode: product.barcode || '',
       categoryId: product.categoryId,
       unit: product.unit,
       costPrice: product.costPrice,
@@ -654,10 +668,31 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
     setInlineNotice(`Created and selected unit of measurement "${created.name}".`);
   };
 
+  const existingProductWithBarcode = useMemo(() => {
+    const rawBc = formState.barcode?.trim();
+    if (!rawBc) return undefined;
+    return shopProducts.find(
+      (p) =>
+        p.id !== editingProduct?.id &&
+        p.barcode &&
+        p.barcode.trim().toLowerCase() === rawBc.toLowerCase()
+    );
+  }, [formState.barcode, shopProducts, editingProduct]);
+
   const handleProductFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const effectiveBarcode =
+      hasBarcodeToggle && formState.barcode.trim()
+        ? formState.barcode.trim()
+        : formState.sku.trim();
+
+    const payload: ProductFormInput = {
+      ...formState,
+      barcode: effectiveBarcode,
+    };
+
     const validation = validateProductInput(
-      formState,
+      payload,
       shopProducts,
       editingProduct?.id
     );
@@ -665,7 +700,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
       setFormError(validation.error ?? 'Please check product fields.');
       return;
     }
-    onSaveProduct(formState, editingProduct?.id);
+    onSaveProduct(payload, editingProduct?.id);
     setProductModalOpen(false);
   };
 
@@ -2929,7 +2964,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
                 <div>
                   <label
                     htmlFor="prod-sku-input"
@@ -2946,23 +2981,82 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                     }
                     className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg"
                   />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Unique shop SKU for inventory identification
+                  </p>
                 </div>
-                <div>
-                  <label
-                    htmlFor="prod-barcode-input"
-                    className="block font-semibold text-slate-700 mb-1"
-                  >
-                    Barcode (EAN / UPC)
-                  </label>
-                  <input
-                    id="prod-barcode-input"
-                    type="text"
-                    value={formState.barcode}
-                    onChange={(e) =>
-                      setFormState({ ...formState, barcode: e.target.value })
-                    }
-                    className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg"
-                  />
+
+                {/* BARCODE TOGGLE & CAPTURE SECTION */}
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Barcode className="w-4 h-4 text-emerald-700 shrink-0" />
+                      <div>
+                        <span className="font-semibold text-slate-800 text-xs block">
+                          Manufacturer Barcode
+                        </span>
+                        <span className="text-[10px] text-slate-500 block">
+                          {hasBarcodeToggle ? 'Item has scannable barcode' : 'Item has no barcode'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Toggle Switch */}
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={hasBarcodeToggle}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setHasBarcodeToggle(checked);
+                          if (checked) {
+                            setBarcodeScannerOpen(true);
+                          } else {
+                            setFormState((prev) => ({ ...prev, barcode: '' }));
+                          }
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+                    </label>
+                  </div>
+
+                  {hasBarcodeToggle ? (
+                    <div className="space-y-1.5 pt-1.5 border-t border-slate-200">
+                      <div className="flex gap-1.5">
+                        <input
+                          id="prod-barcode-input"
+                          type="text"
+                          value={formState.barcode}
+                          onChange={(e) =>
+                            setFormState({ ...formState, barcode: e.target.value })
+                          }
+                          placeholder="Scan or enter barcode"
+                          className="flex-1 min-w-0 px-2.5 py-1.5 font-mono border border-slate-300 rounded-lg text-xs bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setBarcodeScannerOpen(true)}
+                          className="px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-lg text-xs flex items-center gap-1 shrink-0 cursor-pointer shadow-xs transition-colors"
+                          title="Open scanner popup"
+                        >
+                          <Scan className="w-3.5 h-3.5" />
+                          <span>Scan</span>
+                        </button>
+                      </div>
+
+                      {existingProductWithBarcode && (
+                        <p className="text-[10px] text-amber-700 flex items-center gap-1 font-medium">
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          Already used by: &ldquo;{existingProductWithBarcode.name}&rdquo;
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-500 italic pt-1">
+                      Toggle ON if the item packaging has a barcode to scan.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -3417,6 +3511,21 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {/* Barcode Capture Scanner Modal */}
+      {barcodeScannerOpen && (
+        <BarcodeCaptureModal
+          isOpen={barcodeScannerOpen}
+          onClose={() => setBarcodeScannerOpen(false)}
+          onBarcodeCaptured={(code) => {
+            setHasBarcodeToggle(true);
+            setFormState((prev) => ({ ...prev, barcode: code }));
+            if (formError) setFormError(null);
+          }}
+          currentBarcode={formState.barcode}
+          productName={formState.name}
+        />
       )}
 
       {/* DEDICATED STOCK ADJUSTMENT MODAL (Restock, Add Stock, Damage, Return) */}
