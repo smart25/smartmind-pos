@@ -1240,19 +1240,24 @@ const activeBusiness = useMemo<Business>(() => {
                   }
                 }
 
-                // B. Ensure completed transfers have products in destination shop
+                // B. Ensure completed transfers have products in destination shop (verify against Cloud Firestore)
                 if (t.status === 'completed') {
+                  let destProds: Product[] = [];
+                  try {
+                    destProds = await liveDataService.listShopProducts(t.businessId, t.destinationShopId);
+                  } catch {
+                    continue; // Skip healing if unable to query cloud database
+                  }
+
                   for (const item of t.items) {
-                    const destProducts = products.filter(
-                      (p) => p.businessId === t.businessId && p.shopId === t.destinationShopId
-                    );
-                    const exists = destProducts.some(
+                    const exists = destProds.some(
                       (p) =>
-                        p.sku.toLowerCase() === item.sku.toLowerCase() ||
-                        (p.barcode && item.barcode && p.barcode === item.barcode)
+                        (p.sku && item.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
+                        (p.barcode && item.barcode && p.barcode.toLowerCase() === item.barcode.toLowerCase()) ||
+                        (p.name && item.productName && p.name.trim().toLowerCase() === item.productName.trim().toLowerCase())
                     );
                     if (!exists) {
-                      const healedProdId = generateUniqueProductId(products, t.destinationShopId);
+                      const healedProdId = generateUniqueProductId(destProds, t.destinationShopId);
                       const healedProd: Product = {
                         id: healedProdId,
                         shopId: t.destinationShopId,
@@ -1272,6 +1277,7 @@ const activeBusiness = useMemo<Business>(() => {
                       };
                       try {
                         await liveDataService.persistLiveProduct(healedProd, { operationType: 'create' });
+                        destProds.push(healedProd);
                         if (!isCancelled) {
                           setProducts((prev) => {
                             if (prev.some((p) => p.id === healedProd.id)) return prev;
@@ -1295,7 +1301,7 @@ const activeBusiness = useMemo<Business>(() => {
         isCancelled = true;
       };
     }
-  }, [activeBusiness?.id, dataMode, liveDataService, products.length]);
+  }, [activeBusiness?.id, dataMode, liveDataService]);
 
   // Active shop object (must be within authorizedShops)
   // Support Mode resolves only the shop authorized by its server-issued session.
@@ -3505,6 +3511,105 @@ useEffect(() => {
     }
   };
 
+  const handleDeduplicateProducts = async (
+    shopId: string
+  ): Promise<{ mergedCount: number; removedCount: number }> => {
+    if (!activeBusiness || !shopId) return { mergedCount: 0, removedCount: 0 };
+
+    const shopProds = products.filter(
+      (p) => p.businessId === activeBusiness.id && p.shopId === shopId
+    );
+
+    // Group by Barcode > SKU > normalized Name
+    const groups = new Map<string, Product[]>();
+    for (const p of shopProds) {
+      const barcodeKey = p.barcode?.trim().toLowerCase();
+      const skuKey = p.sku?.trim().toLowerCase();
+      const nameKey = p.name?.trim().toLowerCase();
+
+      const key = barcodeKey && barcodeKey !== 'none'
+        ? `bc:${barcodeKey}`
+        : skuKey
+        ? `sku:${skuKey}`
+        : `name:${nameKey}`;
+
+      const list = groups.get(key) || [];
+      list.push(p);
+      groups.set(key, list);
+    }
+
+    let mergedCount = 0;
+    let removedCount = 0;
+    const removedProductIds = new Set<string>();
+    const updatedProducts: Product[] = [];
+
+    for (const [, items] of groups) {
+      if (items.length <= 1) continue;
+
+      // Primary product is the oldest created or first item
+      const sorted = [...items].sort((a, b) => {
+        const tA = new Date(a.createdAt || 0).getTime();
+        const tB = new Date(b.createdAt || 0).getTime();
+        return tA - tB;
+      });
+
+      const primary = sorted[0];
+      const duplicates = sorted.slice(1);
+      const combinedStock = items.reduce((sum, item) => sum + (item.stockQuantity || 0), 0);
+
+      const mergedPrimary: Product = {
+        ...primary,
+        stockQuantity: combinedStock,
+        updatedAt: formatPosTimestamp(),
+      };
+
+      updatedProducts.push(mergedPrimary);
+      mergedCount++;
+
+      // Update primary in Cloud Firestore
+      if (dataMode !== 'demo' && liveDataService) {
+        try {
+          await liveDataService.persistLiveProduct(mergedPrimary, {
+            operationType: 'update',
+            supportSessionId: activeSupportSession?.supportSessionId,
+          });
+        } catch (err) {
+          console.error('Failed to update merged primary product:', err);
+        }
+
+        // Delete each duplicate document from Cloud Firestore and local storage
+        for (const dup of duplicates) {
+          try {
+            await liveDataService.removeLiveProduct(activeBusiness.id, shopId, dup.id);
+            removedProductIds.add(dup.id);
+            removedCount++;
+          } catch (err) {
+            console.error('Failed to remove duplicate product document:', dup.id, err);
+          }
+        }
+      } else {
+        duplicates.forEach((d) => {
+          removedProductIds.add(d.id);
+          removedCount++;
+          if (dbAdapter) {
+            dbAdapter.deleteProduct(d.id, shopId).catch(() => {});
+          }
+        });
+      }
+    }
+
+    if (removedProductIds.size > 0 || updatedProducts.length > 0) {
+      const updatedMap = new Map(updatedProducts.map((p) => [p.id, p]));
+      setProducts((prev) =>
+        prev
+          .filter((p) => !removedProductIds.has(p.id))
+          .map((p) => updatedMap.get(p.id) || p)
+      );
+    }
+
+    return { mergedCount, removedCount };
+  };
+
   const handleSaveProduct = (
     input: ProductFormInput,
     editingProductId?: string
@@ -3884,19 +3989,43 @@ useEffect(() => {
     );
 
     // 1. Add transferred items to destination shop stock immediately
+    // Pre-fetch all destination shop products directly from live cloud or fallback to in-memory state
+    let destProds: Product[] = [];
+    if (dataMode !== 'demo' && liveDataService) {
+      try {
+        destProds = await liveDataService.listShopProducts(
+          transfer.businessId,
+          transfer.destinationShopId
+        );
+      } catch {
+        destProds = products.filter(
+          (p) =>
+            p.businessId === transfer.businessId &&
+            p.shopId === transfer.destinationShopId
+        );
+      }
+    } else {
+      destProds = products.filter(
+        (p) =>
+          p.businessId === transfer.businessId &&
+          p.shopId === transfer.destinationShopId
+      );
+    }
+
     for (const item of transfer.items) {
       const receivedQty = confirmedMap.has(item.productId)
         ? confirmedMap.get(item.productId)!
         : item.quantity;
       if (receivedQty <= 0) continue;
 
-      // Look up if product already exists in destination shop by SKU or barcode
-      const existingDestProd = products.find(
+      // Look up if product already exists in destination shop by SKU, barcode, or exact name
+      const existingDestProd = destProds.find(
         (p) =>
           p.businessId === transfer.businessId &&
           p.shopId === transfer.destinationShopId &&
-          (p.sku.toLowerCase() === item.sku.toLowerCase() ||
-            (p.barcode && item.barcode && p.barcode === item.barcode))
+          ((p.sku && item.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
+            (p.barcode && item.barcode && p.barcode.toLowerCase() === item.barcode.toLowerCase()) ||
+            (p.name && item.productName && p.name.trim().toLowerCase() === item.productName.trim().toLowerCase()))
       );
 
       if (existingDestProd) {
@@ -3944,12 +4073,13 @@ useEffect(() => {
           }
         }
 
+        destProds = destProds.map((p) => (p.id === updatedDestProd.id ? updatedDestProd : p));
         setProducts((prev) =>
           prev.map((p) => (p.id === updatedDestProd.id ? updatedDestProd : p))
         );
       } else {
         // Create product in destination shop
-        const newDestProdId = generateUniqueProductId(products, transfer.destinationShopId);
+        const newDestProdId = generateUniqueProductId(destProds, transfer.destinationShopId);
         const newDestProd: Product = {
           id: newDestProdId,
           shopId: transfer.destinationShopId,
@@ -4005,6 +4135,7 @@ useEffect(() => {
           }
         }
 
+        destProds.push(newDestProd);
         setProducts((prev) => [...prev, newDestProd]);
       }
     }
@@ -5309,6 +5440,7 @@ useEffect(() => {
                 onProcessReceiptReturn={handleProcessReceiptReturn}
                 onAddCategory={handleAddCategory}
                 onAddUnit={handleAddUnit}
+                onDeduplicateProducts={handleDeduplicateProducts}
               />
             )}
 

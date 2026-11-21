@@ -30,6 +30,7 @@ import {
   FileSpreadsheet,
   Trash2,
   Calendar,
+  Layers,
 } from 'lucide-react';
 import {
   downloadInventoryCsvTemplate,
@@ -94,6 +95,7 @@ interface ProductsInventoryPageProps {
   ) => void;
   onAddCategory: (name: string, description: string) => ProductCategory;
   onAddUnit: (name: string, abbreviation: string) => UnitOfMeasurement;
+  onDeduplicateProducts?: (shopId: string) => Promise<{ mergedCount: number; removedCount: number }>;
 }
 
 export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
@@ -112,6 +114,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
   onProcessReceiptReturn,
   onAddCategory,
   onAddUnit,
+  onDeduplicateProducts,
 }) => {
   const draftStorageKey = `smartmind_inv_draft_${shop.id}`;
   const savedDraft = React.useMemo(() => {
@@ -284,6 +287,80 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
   const [deleteConfirmModalOpen, setDeleteConfirmModalOpen] = useState<boolean>(false);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  // Deduplicate / Merge Duplicate Products State
+  const [deduplicateModalOpen, setDeduplicateModalOpen] = useState<boolean>(false);
+  const [isDeduplicating, setIsDeduplicating] = useState<boolean>(false);
+  const [deduplicateSuccessMessage, setDeduplicateSuccessMessage] = useState<string | null>(null);
+
+  const duplicateGroups = useMemo(() => {
+    const groups = new Map<string, Product[]>();
+    shopProducts.forEach((p) => {
+      const barcodeKey = p.barcode?.trim().toLowerCase();
+      const skuKey = p.sku?.trim().toLowerCase();
+      const nameKey = p.name?.trim().toLowerCase();
+
+      const key = barcodeKey && barcodeKey !== 'none'
+        ? `bc:${barcodeKey}`
+        : skuKey
+        ? `sku:${skuKey}`
+        : `name:${nameKey}`;
+
+      const list = groups.get(key) || [];
+      list.push(p);
+      groups.set(key, list);
+    });
+
+    const duplicates: Array<{
+      key: string;
+      name: string;
+      barcode: string;
+      sku: string;
+      primaryProduct: Product;
+      duplicateProducts: Product[];
+      combinedStock: number;
+    }> = [];
+
+    groups.forEach((items, key) => {
+      if (items.length > 1) {
+        const sorted = [...items].sort((a, b) => {
+          const tA = new Date(a.createdAt || 0).getTime();
+          const tB = new Date(b.createdAt || 0).getTime();
+          return tA - tB;
+        });
+        const primaryProduct = sorted[0];
+        const duplicateProducts = sorted.slice(1);
+        const combinedStock = items.reduce((sum, it) => sum + (it.stockQuantity || 0), 0);
+        duplicates.push({
+          key,
+          name: primaryProduct.name,
+          barcode: primaryProduct.barcode,
+          sku: primaryProduct.sku,
+          primaryProduct,
+          duplicateProducts,
+          combinedStock,
+        });
+      }
+    });
+
+    return duplicates;
+  }, [shopProducts]);
+
+  const handleExecuteDeduplication = async () => {
+    if (!onDeduplicateProducts || duplicateGroups.length === 0) return;
+    setIsDeduplicating(true);
+    try {
+      const result = await onDeduplicateProducts(shop.id);
+      setDeduplicateSuccessMessage(
+        `Merged ${result.mergedCount} product groups! Combined stock quantities and deleted ${result.removedCount} duplicate records.`
+      );
+      setDeduplicateModalOpen(false);
+    } catch (err: any) {
+      alert(err.message || 'Failed to merge duplicate products.');
+    } finally {
+      setIsDeduplicating(false);
+    }
+  };
 
   const openDeleteConfirmationModal = (product: Product) => {
     setProductToDelete(product);
@@ -1393,6 +1470,17 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
           <span className="text-xs font-mono text-slate-500 hidden xl:inline mr-1">
             Scope: <strong className="text-slate-800">{shop.code}</strong>
           </span>
+          {duplicateGroups.length > 0 && onDeduplicateProducts && (
+            <button
+              type="button"
+              onClick={() => setDeduplicateModalOpen(true)}
+              className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap min-h-[40px] shadow-xs animate-pulse"
+              title="Merge duplicate products and combine their stock quantities"
+            >
+              <Layers className="w-4 h-4" />
+              <span>Merge Duplicates ({duplicateGroups.length})</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => downloadInventoryCsvTemplate()}
@@ -1425,7 +1513,50 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
 
       {/* SUB-TAB 1: PRODUCT CATALOGUE */}
       {activeSubTab === 'catalogue' && (
-        <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <>
+          {deduplicateSuccessMessage && (
+            <div className="mb-4 p-4 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-950 shadow-xs flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span className="text-xs font-bold text-emerald-900">{deduplicateSuccessMessage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeduplicateSuccessMessage(null)}
+                className="text-emerald-700 hover:text-emerald-900 p-1 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {duplicateGroups.length > 0 && onDeduplicateProducts && (
+            <div className="mb-4 p-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-950 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-200/80 flex items-center justify-center shrink-0 text-amber-800">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-amber-950">
+                    Duplicate Products Detected ({duplicateGroups.length} items affected)
+                  </h4>
+                  <p className="text-xs text-amber-800 mt-0.5">
+                    We found multiple records with identical barcodes or SKUs in <strong>{shop.name}</strong>. You can merge them into single products and combine their stock quantities automatically.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeduplicateModalOpen(true)}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs shrink-0 cursor-pointer transition shadow-xs flex items-center gap-2"
+              >
+                <Layers className="w-4 h-4" />
+                <span>Review &amp; Merge Duplicates ({duplicateGroups.length})</span>
+              </button>
+            </div>
+          )}
+
+          <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="relative flex-1 max-w-md">
               <label htmlFor="inv-search-input" className="sr-only">
@@ -1647,6 +1778,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
             </table>
           </div>
         </section>
+        </>
       )}
 
       {/* SUB-TAB 2: PRODUCT SETTINGS (Categories & Units of Measurement) */}
@@ -4141,6 +4273,119 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>{isDeleting ? 'Deleting...' : 'Yes, Delete Product'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deduplicate Products Confirmation Modal */}
+      {deduplicateModalOpen && duplicateGroups.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="deduplicate-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-amber-50/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 id="deduplicate-modal-title" className="text-base font-display font-bold text-slate-900">
+                    Merge Duplicate Products
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Scope: <strong className="text-slate-700">{shop.name}</strong> ({shop.code}) · {duplicateGroups.length} items to merge
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isDeduplicating}
+                onClick={() => setDeduplicateModalOpen(false)}
+                className="w-8 h-8 rounded-lg hover:bg-slate-200/70 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-amber-950 text-xs">
+                    How merging works:
+                  </p>
+                  <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                    For each duplicated product below, the system will keep the primary record, <strong>sum all stock quantities together</strong> into that single record, and permanently delete the redundant duplicate records from Cloud Firestore.
+                  </p>
+                </div>
+              </div>
+
+              {/* Items List */}
+              <div className="space-y-2">
+                <span className="font-bold text-slate-700 uppercase text-[10px] tracking-wider block">
+                  Duplicates Found ({duplicateGroups.length} Groups)
+                </span>
+                <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
+                  {duplicateGroups.map((grp) => {
+                    const totalRecords = 1 + grp.duplicateProducts.length;
+                    const individualStocks = [
+                      grp.primaryProduct.stockQuantity,
+                      ...grp.duplicateProducts.map((d) => d.stockQuantity),
+                    ];
+                    return (
+                      <div key={grp.key} className="p-3 bg-white flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-bold text-slate-900">{grp.name}</p>
+                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500 font-mono">
+                            <span>SKU: {grp.sku}</span>
+                            {grp.barcode && grp.barcode !== grp.sku && (
+                              <span>· Barcode: {grp.barcode}</span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-amber-800 mt-1">
+                            {totalRecords} records ({individualStocks.join(' + ')} {grp.primaryProduct.unit}s)
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-[10px] uppercase font-bold text-emerald-800 block">
+                            Merged Stock
+                          </span>
+                          <span className="font-mono font-bold text-emerald-950 text-sm">
+                            {grp.combinedStock} {grp.primaryProduct.unit}s
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isDeduplicating}
+                onClick={() => setDeduplicateModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold text-xs cursor-pointer transition-colors disabled:opacity-50 min-h-[38px]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeduplicating}
+                onClick={handleExecuteDeduplication}
+                className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-bold text-xs flex items-center gap-2 cursor-pointer shadow-xs transition-colors disabled:opacity-50 min-h-[38px]"
+              >
+                <Layers className="w-4 h-4" />
+                <span>{isDeduplicating ? 'Merging & Cleaning...' : `Merge & Clean Up (${duplicateGroups.length} Items)`}</span>
               </button>
             </div>
           </div>

@@ -716,7 +716,9 @@ service cloud.firestore {
             hasCataloguePermission() &&
             isValidProduct(request.resource.data, businessId, shopId, productId);
 
-          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+          allow delete: if isPlatformAdmin() ||
+            isBusinessOwnerOf(businessId) ||
+            (canManageShopCatalogue(businessId, shopId) && hasCataloguePermission());
         }
 
         // 6. Shop Inventory Movements (/businesses/{businessId}/shops/{shopId}/inventory_movements/{movementId})
@@ -848,14 +850,18 @@ service cloud.firestore {
         match /suppliers/{supplierId} {
           allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
           allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
-          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+          allow delete: if isPlatformAdmin() ||
+            isBusinessOwnerOf(businessId) ||
+            (canManageShopCatalogue(businessId, shopId) && hasCataloguePermission());
         }
 
         // 13. Shop Supplier Supplies (/businesses/{businessId}/shops/{shopId}/supplier_supplies/{supplyId})
         match /supplier_supplies/{supplyId} {
           allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
           allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
-          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+          allow delete: if isPlatformAdmin() ||
+            isBusinessOwnerOf(businessId) ||
+            (canManageShopCatalogue(businessId, shopId) && hasCataloguePermission());
         }
       }
 

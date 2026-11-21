@@ -308,9 +308,15 @@ export function parseInventoryCsvString(
   }
 
   const existingSkusMap = new Map<string, Product>();
+  const existingBarcodesMap = new Map<string, Product>();
   const existingNamesMap = new Map<string, Product>();
   existingProducts.forEach((p) => {
     if (p.sku) existingSkusMap.set(p.sku.trim().toLowerCase(), p);
+    if (p.barcode) {
+      const cleanBc = parseCleanBarcode(p.barcode);
+      if (cleanBc) existingBarcodesMap.set(cleanBc.toLowerCase(), p);
+      existingBarcodesMap.set(p.barcode.trim().toLowerCase(), p);
+    }
     if (p.name) existingNamesMap.set(p.name.trim().toLowerCase(), p);
   });
 
@@ -357,14 +363,16 @@ export function parseInventoryCsvString(
       return;
     }
 
-    let rawSku = skuIdx !== -1 ? (cols[skuIdx] || '').trim() : '';
+    const userSuppliedSku = skuIdx !== -1 ? (cols[skuIdx] || '').trim() : '';
+    let rawSku = userSuppliedSku;
     if (!rawSku) {
       // Auto-generate clean, smart SKU from product name abbreviation
       rawSku = generateSmartSkuForProductName(name, autoSkuCounter++);
     }
 
     const rawBarcodeVal = barcodeIdx !== -1 ? cols[barcodeIdx] : '';
-    const barcode = parseCleanBarcode(rawBarcodeVal) || rawSku;
+    const cleanBarcode = parseCleanBarcode(rawBarcodeVal);
+    const barcode = cleanBarcode || rawBarcodeVal.trim() || rawSku;
     const rawCategory = categoryIdx !== -1 ? (cols[categoryIdx] || '').trim() : 'General';
     const categoryName = rawCategory || 'General';
 
@@ -396,15 +404,22 @@ export function parseInventoryCsvString(
       newUnitNamesSet.add(unit);
     }
 
+    // Match priority: 1) explicit SKU, 2) Barcode, 3) Product Name
     const existingMatch =
-      existingSkusMap.get(rawSku.toLowerCase()) ||
+      (userSuppliedSku ? existingSkusMap.get(userSuppliedSku.toLowerCase()) : undefined) ||
+      (cleanBarcode ? existingBarcodesMap.get(cleanBarcode.toLowerCase()) : undefined) ||
+      (rawBarcodeVal ? existingBarcodesMap.get(rawBarcodeVal.trim().toLowerCase()) : undefined) ||
+      (rawSku && !userSuppliedSku ? existingSkusMap.get(rawSku.toLowerCase()) : undefined) ||
       existingNamesMap.get(name.toLowerCase());
+
+    // If an existing product is matched and user did not supply a custom SKU in CSV, preserve existing SKU
+    const effectiveSku = existingMatch && !userSuppliedSku ? existingMatch.sku : rawSku;
 
     validItems.push({
       rowNumber: rowNum,
       name,
-      sku: rawSku,
-      barcode,
+      sku: effectiveSku,
+      barcode: existingMatch?.barcode || barcode,
       categoryName,
       unit,
       sellingPrice,
