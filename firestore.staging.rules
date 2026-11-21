@@ -868,17 +868,15 @@ service cloud.firestore {
         // 8. Shop Customers (/businesses/{businessId}/shops/{shopId}/customers/{customerId})
         match /customers/{customerId} {
           allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
+        }
 
-          allow create: if canAccessShop(businessId, shopId) &&
-            hasCustomerPermission() &&
-            isValidCustomer(request.resource.data, businessId, shopId, customerId);
-
-          allow update: if canAccessShop(businessId, shopId) &&
-            hasCustomerPermission() &&
-            isValidCustomer(request.resource.data, businessId, shopId, customerId) &&
-            request.resource.data.createdAt == resource.data.createdAt;
-
-          allow delete: if false;
+        // 8b. Shop Debt Transactions (/businesses/{businessId}/shops/{shopId}/debt_transactions/{transactionId})
+        match /debt_transactions/{transactionId} {
+          allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
         }
 
         // 9. Shop Payments (/businesses/{businessId}/shops/{shopId}/payments/{paymentId})
@@ -902,20 +900,8 @@ service cloud.firestore {
         // 10. Shop Invoices (/businesses/{businessId}/shops/{shopId}/invoices/{invoiceId})
         match /invoices/{invoiceId} {
           allow get, list: if isPlatformAdmin() || canAccessShop(businessId, shopId);
-
-          allow create: if canAccessShop(businessId, shopId) &&
-            hasInvoicePermission() &&
-            request.resource.data.createdByUserId == request.auth.uid &&
-            isValidInvoice(request.resource.data, businessId, shopId, invoiceId);
-
-          allow update: if canAccessShop(businessId, shopId) &&
-            hasInvoicePermission() &&
-            isValidInvoice(request.resource.data, businessId, shopId, invoiceId) &&
-            request.resource.data.createdAt == resource.data.createdAt &&
-            request.resource.data.createdByUserId == resource.data.createdByUserId &&
-            request.resource.data.invoiceNumber == resource.data.invoiceNumber;
-
-          allow delete: if false;
+          allow create, update: if isPlatformAdmin() || canAccessShop(businessId, shopId);
+          allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
         }
 
         // 11. Sync Operations (/businesses/{businessId}/shops/{shopId}/sync_operations/{operationId})

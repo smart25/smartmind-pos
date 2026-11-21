@@ -810,6 +810,7 @@ useEffect(() => {
           suppliers: cloudSuppliers,
           supplierSupplies: cloudSupplierSupplies,
           debtCustomers: cloudCustomers,
+          debtTransactions: cloudDebtTransactions,
           invoices: cloudInvoices,
         } = supportData;
 
@@ -890,8 +891,9 @@ useEffect(() => {
           setDebtCustomers((prev) => mergeEntities(prev, mergedCustomers));
         }
 
-        if (bizCache?.debtTransactions && bizCache.debtTransactions.length > 0) {
-          setDebtTransactions((prev) => mergeEntities(prev, bizCache.debtTransactions));
+        const mergedDebtTransactions = mergeEntities(cloudDebtTransactions || [], bizCache?.debtTransactions || []);
+        if (mergedDebtTransactions.length > 0) {
+          setDebtTransactions((prev) => mergeEntities(prev, mergedDebtTransactions));
         }
 
         const mergedInvoices = mergeEntities(cloudInvoices || [], bizCache?.invoices || []);
@@ -1403,6 +1405,127 @@ const activeShop = useMemo(() => {
       (r) => r.businessId === activeBusiness.id && (r.shopId === activeShop.id || !r.shopId)
     );
   }, [supplierSupplies, activeShop, activeBusiness.id]);
+
+  // Reconcile invoices with customer debt book transactions
+  useEffect(() => {
+    if (!activeShop || !activeBusiness) return;
+    if (invoices.length === 0 || debtCustomers.length === 0) return;
+
+    // Check for any invoice that has not been posted to debtTransactions
+    const shopTxs = debtTransactions.filter(
+      (t) => t.shopId === activeShop.id && t.businessId === activeBusiness.id
+    );
+    const recordedRefs = new Set(shopTxs.map((t) => t.reference).filter(Boolean));
+
+    let hadUpdates = false;
+    let currentCustomers = [...debtCustomers];
+    const newTransactions: DebtTransaction[] = [];
+
+    const shopInvs = invoices.filter(
+      (inv) => inv.shopId === activeShop.id && inv.businessId === activeBusiness.id
+    );
+
+    for (const inv of shopInvs) {
+      if (inv.totalAmount <= 0) continue;
+      // Find matching customer
+      let targetCust = currentCustomers.find(
+        (c) =>
+          c.shopId === activeShop.id &&
+          c.businessId === activeBusiness.id &&
+          (c.id === inv.customerId ||
+            (c.phone && inv.customerPhone && c.phone.trim() === inv.customerPhone.trim()) ||
+            (c.fullName && inv.customerName && c.fullName.trim().toLowerCase() === inv.customerName.trim().toLowerCase()))
+      );
+
+      if (!targetCust) continue;
+
+      // Has this invoice been recorded as a credit?
+      if (!recordedRefs.has(inv.invoiceNumber)) {
+        const { updatedCustomer, transaction } = applyDebtTransaction(
+          targetCust,
+          'credit',
+          inv.totalAmount,
+          {
+            reference: inv.invoiceNumber,
+            notes: `Invoice ${inv.invoiceNumber} issued`,
+            user: currentUser,
+            timestampIso: inv.createdAt || formatPosTimestamp(),
+          }
+        );
+        targetCust = updatedCustomer;
+        currentCustomers = currentCustomers.map((c) =>
+          c.id === targetCust!.id ? targetCust! : c
+        );
+        newTransactions.push(transaction);
+        recordedRefs.add(inv.invoiceNumber);
+        hadUpdates = true;
+      }
+
+      // Check recorded payments
+      if (inv.payments && inv.payments.length > 0) {
+        for (const pmt of inv.payments) {
+          const pmtRef = pmt.paymentReference || `${inv.invoiceNumber}-PMT-${pmt.id}`;
+          if (!recordedRefs.has(pmtRef) && pmt.amount > 0) {
+            const { updatedCustomer, transaction } = applyDebtTransaction(
+              targetCust,
+              'deposit',
+              pmt.amount,
+              {
+                paymentMethod: pmt.paymentMethod,
+                reference: pmtRef,
+                notes: pmt.notes || `Payment for invoice ${inv.invoiceNumber}`,
+                user: currentUser,
+                timestampIso: pmt.recordedAt || formatPosTimestamp(),
+              }
+            );
+            targetCust = updatedCustomer;
+            currentCustomers = currentCustomers.map((c) =>
+              c.id === targetCust!.id ? targetCust! : c
+            );
+            newTransactions.push(transaction);
+            recordedRefs.add(pmtRef);
+            hadUpdates = true;
+          }
+        }
+      } else if (inv.amountPaid > 0) {
+        const pmtRef = `${inv.invoiceNumber}-PMT-INITIAL`;
+        if (!recordedRefs.has(pmtRef)) {
+          const { updatedCustomer, transaction } = applyDebtTransaction(
+            targetCust,
+            'deposit',
+            inv.amountPaid,
+            {
+              reference: pmtRef,
+              notes: `Initial payment for invoice ${inv.invoiceNumber}`,
+              user: currentUser,
+              timestampIso: inv.createdAt || formatPosTimestamp(),
+            }
+          );
+          targetCust = updatedCustomer;
+          currentCustomers = currentCustomers.map((c) =>
+            c.id === targetCust!.id ? targetCust! : c
+          );
+          newTransactions.push(transaction);
+          recordedRefs.add(pmtRef);
+          hadUpdates = true;
+        }
+      }
+    }
+
+    if (hadUpdates) {
+      setDebtCustomers(currentCustomers);
+      setDebtTransactions((prev) => [...newTransactions, ...prev]);
+
+      if (dataMode !== 'demo' && liveDataService) {
+        for (const cust of currentCustomers) {
+          void liveDataService.saveShopDebtCustomer(activeBusiness.id, activeShop.id, cust);
+        }
+        for (const tx of newTransactions) {
+          void liveDataService.saveShopDebtTransaction(activeBusiness.id, activeShop.id, tx);
+        }
+      }
+    }
+  }, [activeShop?.id, activeBusiness?.id, invoices, debtCustomers.length, debtTransactions.length]);
 
   // Pending sync count for current context
   const pendingTransactionsCount = useMemo(() => {
@@ -1972,6 +2095,7 @@ useEffect(() => {
               suppliers: cloudSuppliers,
               supplierSupplies: cloudSupplierSupplies,
               debtCustomers: cloudCustomers,
+              debtTransactions: cloudDebtTransactions,
               invoices: cloudInvoices,
             } = supportData;
 
@@ -2029,8 +2153,9 @@ useEffect(() => {
               setDebtCustomers((prev) => mergeEntities(prev, mergedCustomers));
             }
 
-            if (bizCache?.debtTransactions && bizCache.debtTransactions.length > 0) {
-              setDebtTransactions((prev) => mergeEntities(prev, bizCache.debtTransactions));
+            const mergedDebtTransactions = mergeEntities(cloudDebtTransactions || [], bizCache?.debtTransactions || []);
+            if (mergedDebtTransactions.length > 0) {
+              setDebtTransactions((prev) => mergeEntities(prev, mergedDebtTransactions));
             }
 
             const mergedInvoices = mergeEntities(cloudInvoices || [], bizCache?.invoices || []);
@@ -4484,6 +4609,9 @@ useEffect(() => {
     };
 
     setDebtCustomers((prev) => [newCustomer, ...prev]);
+    if (dataMode !== 'demo' && liveDataService) {
+      void liveDataService.saveShopDebtCustomer(activeBusiness.id, activeShop.id, newCustomer);
+    }
     return newCustomer;
   };
 
@@ -4503,7 +4631,8 @@ useEffect(() => {
     setDebtCustomers((prev) => {
       const targetCustomer = prev.find(
         (c) =>
-          c.id === customerId &&
+          (c.id === customerId ||
+            (c.phone && options?.reference && c.phone === customerId)) &&
           c.shopId === activeShop.id &&
           c.businessId === activeBusiness.id
       );
@@ -4523,6 +4652,12 @@ useEffect(() => {
       );
 
       setDebtTransactions((prevTx) => [transaction, ...prevTx]);
+
+      if (dataMode !== 'demo' && liveDataService) {
+        void liveDataService.saveShopDebtCustomer(activeBusiness.id, activeShop.id, updatedCustomer);
+        void liveDataService.saveShopDebtTransaction(activeBusiness.id, activeShop.id, transaction);
+      }
+
       return prev.map((c) =>
         c.id === updatedCustomer.id ? updatedCustomer : c
       );
@@ -4549,9 +4684,36 @@ useEffect(() => {
       initialStatus = 'partially_paid';
     }
 
+    // Resolve or auto-register debt customer so invoice appears in Debt Book
+    let targetCustomerId = invoiceData.customerId;
+    if (!targetCustomerId || targetCustomerId === 'none') {
+      const match = debtCustomers.find(
+        (c) =>
+          c.shopId === activeShop.id &&
+          c.businessId === activeBusiness.id &&
+          ((c.phone && invoiceData.customerPhone && c.phone.trim() === invoiceData.customerPhone.trim()) ||
+            (c.fullName && invoiceData.customerName && c.fullName.trim().toLowerCase() === invoiceData.customerName.trim().toLowerCase()))
+      );
+      if (match) {
+        targetCustomerId = match.id;
+      } else if (invoiceData.customerName?.trim() && invoiceData.customerPhone?.trim()) {
+        const newCust = handleAddDebtCustomer({
+          fullName: invoiceData.customerName.trim(),
+          phone: invoiceData.customerPhone.trim(),
+          creditLimitEnabled: false,
+          creditLimitAmount: 0,
+          notes: invoiceData.companyName?.trim()
+            ? `Company: ${invoiceData.companyName.trim()}`
+            : 'Registered from Invoicing workspace',
+        });
+        targetCustomerId = newCust.id;
+      }
+    }
+
     const newInvoice: Invoice = {
       ...invoiceData,
       id: generateUniqueInvoiceId(invoices, activeShop.id),
+      customerId: targetCustomerId !== 'none' ? targetCustomerId : undefined,
       amountPaid: initialPaid,
       balanceRemaining: initialBalance,
       status: initialStatus,
@@ -4560,6 +4722,27 @@ useEffect(() => {
       updatedAt: nowFormatted,
     };
     setInvoices((prev) => [newInvoice, ...prev]);
+
+    // Record credit and initial deposit transactions in Customer Debt Book
+    if (targetCustomerId && targetCustomerId !== 'none') {
+      if (newInvoice.totalAmount > 0) {
+        handleRecordDebtTransaction(targetCustomerId, 'credit', newInvoice.totalAmount, {
+          reference: newInvoice.invoiceNumber,
+          notes: `Invoice ${newInvoice.invoiceNumber} issued`,
+        });
+      }
+      if (initialPaid > 0) {
+        handleRecordDebtTransaction(targetCustomerId, 'deposit', initialPaid, {
+          reference: `${newInvoice.invoiceNumber}-PMT-INITIAL`,
+          notes: `Initial payment for invoice ${newInvoice.invoiceNumber}`,
+        });
+      }
+    }
+
+    if (dataMode !== 'demo' && liveDataService) {
+      void liveDataService.saveShopInvoice(activeBusiness.id, activeShop.id, newInvoice);
+    }
+
     return newInvoice;
   };
 
@@ -4571,6 +4754,7 @@ useEffect(() => {
     notes?: string
   ) => {
     const nowFormatted = formatPosTimestamp();
+    let updatedTargetInvoice: Invoice | null = null;
     setInvoices((prev) =>
       prev.map((inv) => {
         if (inv.id !== invoiceId) return inv;
@@ -4607,7 +4791,7 @@ useEffect(() => {
 
         const existingPayments = inv.payments ?? [];
 
-        return {
+        const updated: Invoice = {
           ...inv,
           amountPaid: updatedAmountPaid,
           balanceRemaining: newBalance,
@@ -4615,8 +4799,37 @@ useEffect(() => {
           payments: [...existingPayments, newRecord],
           updatedAt: nowFormatted,
         };
+        updatedTargetInvoice = updated;
+        return updated;
       })
     );
+
+    // Also record the deposit in the Customer Debt Book
+    const inv = invoices.find((i) => i.id === invoiceId);
+    if (inv && amount > 0) {
+      let targetCustId = inv.customerId;
+      if (!targetCustId || targetCustId === 'none') {
+        const match = debtCustomers.find(
+          (c) =>
+            c.shopId === inv.shopId &&
+            c.businessId === inv.businessId &&
+            ((c.phone && inv.customerPhone && c.phone.trim() === inv.customerPhone.trim()) ||
+              (c.fullName && inv.customerName && c.fullName.trim().toLowerCase() === inv.customerName.trim().toLowerCase()))
+        );
+        if (match) targetCustId = match.id;
+      }
+      if (targetCustId && targetCustId !== 'none') {
+        handleRecordDebtTransaction(targetCustId, 'deposit', amount, {
+          paymentMethod,
+          reference: paymentReference?.trim() || `${inv.invoiceNumber}-PMT-${getUniqueTimestampSuffix()}`,
+          notes: notes?.trim() || `Payment for invoice ${inv.invoiceNumber}`,
+        });
+      }
+    }
+
+    if (dataMode !== 'demo' && liveDataService && updatedTargetInvoice && activeShop) {
+      void liveDataService.saveShopInvoice(activeBusiness.id, activeShop.id, updatedTargetInvoice);
+    }
   };
 
   // =========================================================================

@@ -126,3 +126,79 @@ test('Debt Book CSV Export Suite', async (t) => {
     assert.ok(csv.includes('Total,3 Transactions,,,35000.00,15000.00,20000.00,,,'));
   });
 });
+
+test('Debt Book Invoice Reconciliation & Calculation Suite', async (t) => {
+  const { calculateDebtBookSummary, applyDebtTransaction } = await import('./posCalculations');
+
+  await t.test('calculates debt book summary and accurately updates totals upon invoice credit & deposit', () => {
+    const customer: DebtCustomer = {
+      id: 'cust-happy',
+      shopId: 'SHP-02',
+      businessId: 'biz-01',
+      fullName: 'Happy Day',
+      phone: '+23490898655544',
+      creditLimitEnabled: false,
+      creditLimitAmount: 0,
+      totalCredit: 0,
+      amountPaid: 0,
+      balanceRemaining: 0,
+      createdAt: '2026-11-21',
+      updatedAt: '2026-11-21',
+    };
+
+    const dummyUser = { id: 'usr-1', fullName: 'Uchenna Manager', role: 'shop_manager' } as any;
+
+    // Apply invoice credit (e.g. 8600.00)
+    const { updatedCustomer: afterCredit, transaction: tx1 } = applyDebtTransaction(
+      customer,
+      'credit',
+      8600,
+      {
+        reference: 'INV-SHP-20261121-001',
+        notes: 'Invoice INV-SHP-20261121-001 issued',
+        user: dummyUser,
+        timestampIso: '2026-11-21T12:00:00Z',
+      }
+    );
+
+    assert.equal(afterCredit.totalCredit, 8600);
+    assert.equal(afterCredit.amountPaid, 0);
+    assert.equal(afterCredit.balanceRemaining, 8600);
+    assert.equal(tx1.type, 'credit');
+    assert.equal(tx1.amount, 8600);
+
+    // Summary calculation
+    const summary1 = calculateDebtBookSummary([afterCredit], [tx1], 'SHP-02', 'biz-01');
+    assert.equal(summary1.totalCredit, 8600);
+    assert.equal(summary1.amountPaid, 0);
+    assert.equal(summary1.balanceRemaining, 8600);
+    assert.equal(summary1.creditTransactionsCount, 1);
+    assert.equal(summary1.depositTransactionsCount, 0);
+
+    // Part-payment deposit (e.g. 3000.00)
+    const { updatedCustomer: afterDeposit, transaction: tx2 } = applyDebtTransaction(
+      afterCredit,
+      'deposit',
+      3000,
+      {
+        paymentMethod: 'bank_transfer',
+        reference: 'INV-SHP-20261121-001-PMT',
+        notes: 'Part payment',
+        user: dummyUser,
+        timestampIso: '2026-11-21T13:00:00Z',
+      }
+    );
+
+    assert.equal(afterDeposit.totalCredit, 8600);
+    assert.equal(afterDeposit.amountPaid, 3000);
+    assert.equal(afterDeposit.balanceRemaining, 5600);
+    assert.equal(tx2.type, 'deposit');
+
+    const summary2 = calculateDebtBookSummary([afterDeposit], [tx1, tx2], 'SHP-02', 'biz-01');
+    assert.equal(summary2.totalCredit, 8600);
+    assert.equal(summary2.amountPaid, 3000);
+    assert.equal(summary2.balanceRemaining, 5600);
+    assert.equal(summary2.creditTransactionsCount, 1);
+    assert.equal(summary2.depositTransactionsCount, 1);
+  });
+});

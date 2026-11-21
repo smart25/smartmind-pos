@@ -3136,6 +3136,32 @@ export class LiveFirestoreDataService {
         sales.push(...mergedShopSales);
       }
 
+      // Collect auxiliary entities (invoices, debt book, suppliers) from Cloud Firestore for all authorized shops
+      const cloudInvoices: Invoice[] = [];
+      const cloudDebtCustomers: DebtCustomer[] = [];
+      const cloudDebtTransactions: DebtTransaction[] = [];
+      const cloudSuppliers: Supplier[] = [];
+      const cloudSupplierSupplies: SupplierSupplyRecord[] = [];
+
+      for (const shop of authorizedShops) {
+        try {
+          const [sInvs, sCusts, sTxs, sSups, sSupplies] = await Promise.all([
+            this.listShopInvoices(business.id, shop.id).catch(() => [] as Invoice[]),
+            this.listShopCustomers(business.id, shop.id).catch(() => [] as DebtCustomer[]),
+            this.listShopDebtTransactions(business.id, shop.id).catch(() => [] as DebtTransaction[]),
+            this.listShopSuppliers(business.id, shop.id).catch(() => [] as Supplier[]),
+            this.listShopSupplierSupplies(business.id, shop.id).catch(() => [] as SupplierSupplyRecord[]),
+          ]);
+          cloudInvoices.push(...sInvs);
+          cloudDebtCustomers.push(...sCusts);
+          cloudDebtTransactions.push(...sTxs);
+          cloudSuppliers.push(...sSups);
+          cloudSupplierSupplies.push(...sSupplies);
+        } catch {
+          // ignore network or offline failures
+        }
+      }
+
       // Preserve any previously cached local-only entities (invoices, debt book, suppliers, stockAdjustments) for this business and its authorized users
       const businessCache = loadBusinessScopedLiveCache(business.id);
       const userCache = loadUserScopedLiveCache(userProfile.id);
@@ -3144,6 +3170,17 @@ export class LiveFirestoreDataService {
         (userCache && userCache.businessId === business.id ? userCache : null);
       const isSameBusinessCache = !!existingCache;
       const authorizedShopIdSet = new Set(authorizedShops.map((s) => s.id));
+
+      const mergeEntitiesList = <T extends { id: string }>(primary?: T[], fallback?: T[]): T[] => {
+        const map = new Map<string, T>();
+        (fallback || []).forEach((item) => {
+          if (item && item.id) map.set(item.id, item);
+        });
+        (primary || []).forEach((item) => {
+          if (item && item.id) map.set(item.id, item);
+        });
+        return Array.from(map.values());
+      };
 
       if (
         businessUsers.length <= 1 &&
@@ -3175,33 +3212,48 @@ export class LiveFirestoreDataService {
             )
           : [],
         sales,
-        invoices: isSameBusinessCache
-          ? (existingCache.invoices || []).filter(
-              (i) =>
-                i.businessId === business.id &&
-                (authorizedShopIdSet.has(i.shopId) || !i.shopId)
-            )
-          : [],
-        debtCustomers: isSameBusinessCache
-          ? (existingCache.debtCustomers || []).filter(
-              (c) => c.businessId === business.id
-            )
-          : [],
-        debtTransactions: isSameBusinessCache
-          ? (existingCache.debtTransactions || []).filter(
-              (t) => t.businessId === business.id
-            )
-          : [],
-        suppliers: isSameBusinessCache
-          ? (existingCache.suppliers || []).filter(
-              (s) => s.businessId === business.id
-            )
-          : [],
-        supplierSupplies: isSameBusinessCache
-          ? (existingCache.supplierSupplies || []).filter(
-              (r) => r.businessId === business.id
-            )
-          : [],
+        invoices: mergeEntitiesList(
+          cloudInvoices.filter((i) => !isKnownDemoRecord(i as any)),
+          isSameBusinessCache
+            ? (existingCache.invoices || []).filter(
+                (i) =>
+                  i.businessId === business.id &&
+                  (authorizedShopIdSet.has(i.shopId) || !i.shopId)
+              )
+            : []
+        ),
+        debtCustomers: mergeEntitiesList(
+          cloudDebtCustomers.filter((c) => !isKnownDemoRecord(c as any)),
+          isSameBusinessCache
+            ? (existingCache.debtCustomers || []).filter(
+                (c) => c.businessId === business.id
+              )
+            : []
+        ),
+        debtTransactions: mergeEntitiesList(
+          cloudDebtTransactions.filter((t) => !isKnownDemoRecord(t as any)),
+          isSameBusinessCache
+            ? (existingCache.debtTransactions || []).filter(
+                (t) => t.businessId === business.id
+              )
+            : []
+        ),
+        suppliers: mergeEntitiesList(
+          cloudSuppliers.filter((s) => !isKnownDemoRecord(s as any)),
+          isSameBusinessCache
+            ? (existingCache.suppliers || []).filter(
+                (s) => s.businessId === business.id
+              )
+            : []
+        ),
+        supplierSupplies: mergeEntitiesList(
+          cloudSupplierSupplies.filter((r) => !isKnownDemoRecord(r as any)),
+          isSameBusinessCache
+            ? (existingCache.supplierSupplies || []).filter(
+                (r) => r.businessId === business.id
+              )
+            : []
+        ),
         customRoles: isSameBusinessCache
           ? (existingCache.customRoles || []).filter(
               (r) => r.businessId === business.id
@@ -6325,6 +6377,17 @@ const result = response.data;
     }
   }
 
+  async listShopDebtTransactions(businessId: string, shopId: string): Promise<DebtTransaction[]> {
+    try {
+      const snap = await getDocs(
+        collection(db, 'businesses', businessId, 'shops', shopId, 'debt_transactions')
+      );
+      return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as DebtTransaction));
+    } catch {
+      return [];
+    }
+  }
+
   async saveShopSupplier(businessId: string, shopId: string, supplier: Supplier): Promise<void> {
     try {
       await setDoc(doc(db, 'businesses', businessId, 'shops', shopId, 'suppliers', supplier.id), supplier, { merge: true });
@@ -6341,6 +6404,30 @@ const result = response.data;
     }
   }
 
+  async saveShopInvoice(businessId: string, shopId: string, invoice: Invoice): Promise<void> {
+    try {
+      await setDoc(doc(db, 'businesses', businessId, 'shops', shopId, 'invoices', invoice.id), invoice, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save invoice to cloud Firestore:', err);
+    }
+  }
+
+  async saveShopDebtCustomer(businessId: string, shopId: string, customer: DebtCustomer): Promise<void> {
+    try {
+      await setDoc(doc(db, 'businesses', businessId, 'shops', shopId, 'customers', customer.id), customer, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save debt customer to cloud Firestore:', err);
+    }
+  }
+
+  async saveShopDebtTransaction(businessId: string, shopId: string, transaction: DebtTransaction): Promise<void> {
+    try {
+      await setDoc(doc(db, 'businesses', businessId, 'shops', shopId, 'debt_transactions', transaction.id), transaction, { merge: true });
+    } catch (err) {
+      console.warn('Failed to save debt transaction to cloud Firestore:', err);
+    }
+  }
+
   async loadSupportWorkspaceData(
     businessId: string,
     shopId: string
@@ -6353,6 +6440,7 @@ const result = response.data;
     suppliers: Supplier[];
     supplierSupplies: SupplierSupplyRecord[];
     debtCustomers: DebtCustomer[];
+    debtTransactions: DebtTransaction[];
     invoices: Invoice[];
   }> {
     const [
@@ -6363,6 +6451,7 @@ const result = response.data;
       suppliers,
       supplierSupplies,
       debtCustomers,
+      debtTransactions,
       invoices,
     ] = await Promise.all([
       this.cloudProvider.listShopProducts(businessId, shopId).catch((err) => {
@@ -6383,6 +6472,7 @@ const result = response.data;
       this.listShopSuppliers(businessId, shopId),
       this.listShopSupplierSupplies(businessId, shopId),
       this.listShopCustomers(businessId, shopId),
+      this.listShopDebtTransactions(businessId, shopId),
       this.listShopInvoices(businessId, shopId),
     ]);
 
@@ -6422,6 +6512,7 @@ const result = response.data;
       suppliers: suppliers.filter((s) => !isKnownDemoRecord(s as any)),
       supplierSupplies: supplierSupplies.filter((r) => !isKnownDemoRecord(r as any)),
       debtCustomers: debtCustomers.filter((c) => !isKnownDemoRecord(c as any)),
+      debtTransactions: debtTransactions.filter((t) => !isKnownDemoRecord(t as any)),
       invoices: invoices.filter((i) => !isKnownDemoRecord(i as any)),
     };
   }
