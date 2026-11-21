@@ -53,6 +53,7 @@ import {
   SUPPORTED_CURRENCIES,
 } from '../utils/posCalculations';
 import { UserPasswordModal } from '../components/common/UserPasswordModal';
+import { APP_VERSION } from '../constants/version';
 import {
   getCachedOfflineLogo,
   resolveDocumentIdentity,
@@ -2611,6 +2612,29 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <p className="font-mono font-bold text-slate-900">
                     v5 (Minor-unit Integer Kobo Currency)
                   </p>
+                </div>
+                <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                  <span className="text-slate-500">Application Version</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-mono font-bold text-slate-900">
+                      v{APP_VERSION}
+                    </p>
+                    {typeof window !== 'undefined' && window.smartmindDesktopApi?.checkForUpdates && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await window.smartmindDesktopApi?.checkForUpdates?.();
+                          } catch (e) {
+                            console.warn('Update check failed:', e);
+                          }
+                        }}
+                        className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded border border-emerald-300 transition-colors"
+                      >
+                        Check for Updates
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
                   <span className="text-slate-500">Desktop Packaging Target</span>

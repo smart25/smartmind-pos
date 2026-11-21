@@ -59,6 +59,17 @@ export interface SmartmindDesktopApi {
     request: SmartmindPrintRequest
   ) => Promise<SmartmindPrintResult>;
 
+  // In-App Auto-Update API
+  checkForUpdates?: () => Promise<{ status: string; updateInfo?: any; error?: string }>;
+  startDownloadUpdate?: () => Promise<{ status: string; error?: string }>;
+  quitAndInstallUpdate?: () => Promise<void> | void;
+  onUpdateChecking?: (callback: () => void) => () => void;
+  onUpdateAvailable?: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void;
+  onUpdateNotAvailable?: (callback: (info: { version: string }) => void) => () => void;
+  onUpdateDownloadProgress?: (callback: (progress: { percent: number; transferred: number; total: number; bytesPerSecond: number }) => void) => () => void;
+  onUpdateDownloaded?: (callback: (info: { version: string; releaseNotes?: string }) => void) => () => void;
+  onUpdateError?: (callback: (err: { message: string }) => void) => () => void;
+
   sqlite?: ElectronSqliteBridge;
 }
 

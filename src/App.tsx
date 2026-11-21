@@ -101,6 +101,7 @@ import {
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
 import { DataEnvironmentBanner } from './components/layout/DataEnvironmentBanner';
+import { AppUpdateNotificationModal } from './components/desktop/AppUpdateNotificationModal';
 import {
   LoginPage,
   AuthenticatedFirebaseIdentity,
@@ -5239,11 +5240,14 @@ useEffect(() => {
   if (sessionStage === 'login') {
     const savedDemoUsers = loadIsolatedDemoStore()?.users ?? DEMO_USERS;
     return (
-      <LoginPage
-        demoUsers={savedDemoUsers}
-        onAuthenticated={handleAuthenticated}
-        onAuthenticatedFirebase={handleAuthenticatedFirebase}
-      />
+      <>
+        <LoginPage
+          demoUsers={savedDemoUsers}
+          onAuthenticated={handleAuthenticated}
+          onAuthenticatedFirebase={handleAuthenticatedFirebase}
+        />
+        <AppUpdateNotificationModal />
+      </>
     );
   }
 
@@ -5298,6 +5302,7 @@ useEffect(() => {
           }}
           onSignOut={handleSignOut}
         />
+        <AppUpdateNotificationModal />
       </div>
     );
   }
@@ -5484,6 +5489,7 @@ useEffect(() => {
             onDeleteCustomRole={handleDeleteCustomRole}
           />
         </div>
+        <AppUpdateNotificationModal />
       </div>
     );
   }
@@ -5520,6 +5526,7 @@ useEffect(() => {
             allDemoUsers={visibleUsersForActor}
           />
         </div>
+        <AppUpdateNotificationModal />
       </div>
     );
   }
@@ -5823,6 +5830,7 @@ useEffect(() => {
           </main>
         </div>
       </div>
+      <AppUpdateNotificationModal />
     </div>
   );
 }

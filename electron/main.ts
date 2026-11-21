@@ -3,6 +3,20 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+let autoUpdater: any = null;
+try {
+  const updaterModule = require('electron-updater');
+  autoUpdater = updaterModule.autoUpdater;
+  if (autoUpdater) {
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = true;
+  }
+} catch (err) {
+  console.warn('[SmartMind POS] electron-updater module could not be loaded:', err);
+}
 
 /**
  * SmartMind POS — Stage 1: Electron Desktop Main Process
@@ -227,9 +241,97 @@ async function createMainWindow(): Promise<void> {
     await mainWindow.loadFile(indexPath);
   }
 
+  if (mainWindow) {
+    setupAutoUpdater(mainWindow);
+  }
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+/**
+ * Configures the in-app automatic updater attached to GitHub Releases
+ */
+function setupAutoUpdater(win: BrowserWindow): void {
+  if (!autoUpdater) return;
+
+  // Skip update check in unpacked development mode
+  if (isDev) {
+    console.log('[SmartMind POS AutoUpdater] Development mode: skipping automatic update check.');
+    return;
+  }
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[SmartMind POS AutoUpdater] Checking for updates on GitHub Releases...');
+    if (!win.isDestroyed()) {
+      win.webContents.send('smartmind:update-checking');
+    }
+  });
+
+  autoUpdater.on('update-available', (info: any) => {
+    console.log('[SmartMind POS AutoUpdater] Update available:', info.version);
+    if (!win.isDestroyed()) {
+      win.webContents.send('smartmind:update-available', {
+        version: info.version,
+        releaseDate: info.releaseDate,
+        releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+      });
+    }
+  });
+
+  autoUpdater.on('update-not-available', (info: any) => {
+    console.log('[SmartMind POS AutoUpdater] Current version is up to date:', info.version);
+    if (!win.isDestroyed()) {
+      win.webContents.send('smartmind:update-not-available', {
+        version: info.version,
+      });
+    }
+  });
+
+  autoUpdater.on('error', (err: any) => {
+    console.warn('[SmartMind POS AutoUpdater] Error:', err);
+    if (!win.isDestroyed()) {
+      win.webContents.send('smartmind:update-error', {
+        message: err?.message || 'Error checking for updates',
+      });
+    }
+  });
+
+  autoUpdater.on('download-progress', (progressObj: any) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('smartmind:update-download-progress', {
+        percent: Math.round(progressObj.percent * 10) / 10,
+        transferred: progressObj.transferred,
+        total: progressObj.total,
+        bytesPerSecond: progressObj.bytesPerSecond,
+      });
+    }
+  });
+
+  autoUpdater.on('update-downloaded', (info: any) => {
+    console.log('[SmartMind POS AutoUpdater] Update downloaded successfully:', info.version);
+    if (!win.isDestroyed()) {
+      win.webContents.send('smartmind:update-downloaded', {
+        version: info.version,
+        releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+      });
+    }
+  });
+
+  // Check on startup after 4 seconds once window is fully initialized
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch((err: any) => {
+      console.warn('[SmartMind POS AutoUpdater] Initial check error:', err);
+    });
+  }, 4000);
+
+  // Check periodically every 4 hours
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch((err: any) => {
+      console.warn('[SmartMind POS AutoUpdater] Periodic check error:', err);
+    });
+  }, 4 * 60 * 60 * 1000);
 }
 
 /**
@@ -422,6 +524,42 @@ function registerIpcHandlers(): void {
   ipcMain.handle('smartmind:window-is-maximized', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return win?.isMaximized() ?? false;
+  });
+
+  // In-App Auto-Update IPC channels
+  ipcMain.handle('smartmind:check-for-updates', async () => {
+    if (isDev) {
+      return { status: 'dev_mode', message: 'Auto-update is disabled in development mode' };
+    }
+    if (!autoUpdater) {
+      return { status: 'error', error: 'Auto-updater is not available' };
+    }
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      return { status: 'checking', updateInfo: result?.updateInfo };
+    } catch (err: any) {
+      return { status: 'error', error: err?.message || 'Failed to check for updates' };
+    }
+  });
+
+  ipcMain.handle('smartmind:start-download-update', async () => {
+    if (isDev) {
+      return { status: 'dev_mode', message: 'Auto-update is disabled in development mode' };
+    }
+    if (!autoUpdater) {
+      return { status: 'error', error: 'Auto-updater is not available' };
+    }
+    try {
+      await autoUpdater.downloadUpdate();
+      return { status: 'downloading' };
+    } catch (err: any) {
+      return { status: 'error', error: err?.message || 'Failed to download update' };
+    }
+  });
+
+  ipcMain.handle('smartmind:quit-and-install-update', () => {
+    if (isDev || !autoUpdater) return;
+    autoUpdater.quitAndInstall(false, true);
   });
 }
 
