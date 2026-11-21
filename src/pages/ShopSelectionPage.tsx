@@ -33,6 +33,7 @@ import {
   hasPermission,
   validateShopRegistrationInput,
 } from '../utils/posCalculations';
+import { SMARTMIND_LOGO_IMAGE } from '../constants/branding';
 import { ConnectivityStatusControl } from '../components/layout/ConnectivityStatusControl';
 import { UserPasswordModal } from '../components/common/UserPasswordModal';
 
@@ -249,7 +250,14 @@ export const ShopSelectionPage: React.FC<ShopSelectionPageProps> = ({
       <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between gap-3 sm:gap-4">
         <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
           <img
-            src="/smartmind-logo.png"
+            src={SMARTMIND_LOGO_IMAGE || './smartmind-logo.png'}
+            onError={(e) => {
+              const img = e.currentTarget;
+              if (!img.dataset.retried) {
+                img.dataset.retried = 'true';
+                img.src = './smartmind-logo.png';
+              }
+            }}
             alt="SmartMind POS Logo"
             className="w-9 h-9 rounded-lg object-contain shrink-0"
           />

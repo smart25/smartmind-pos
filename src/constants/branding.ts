@@ -8,6 +8,9 @@
  * 4. In Electron desktop runtime on Windows (loaded via file:// protocol without absolute C:\ root failures).
  */
 
-export const SMARTMIND_LOGO_URL = `${import.meta.env.BASE_URL}assets/smartmind-logo.png`;
+import bundledLogo from '../assets/smartmind-logo.png';
+
+export const SMARTMIND_LOGO_IMAGE = bundledLogo;
+export const SMARTMIND_LOGO_URL = bundledLogo || `${import.meta.env.BASE_URL}smartmind-logo.png`;
 export const SMARTMIND_FALLBACK_LOGO_URL = `${import.meta.env.BASE_URL}smartmind-logo.png`;
 export const SMARTMIND_FAVICON_URL = `${import.meta.env.BASE_URL}favicon.png`;

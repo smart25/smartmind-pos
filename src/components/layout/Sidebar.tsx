@@ -20,10 +20,14 @@ import {
   ChevronRight,
   FileSpreadsheet,
   CalendarClock,
+  Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 import { AppView, Shop, User } from '../../types/pos';
 import { canUserAccessView } from '../../utils/posCalculations';
 import { APP_VERSION } from '../../constants/version';
+import { SMARTMIND_LOGO_IMAGE, SMARTMIND_FALLBACK_LOGO_URL } from '../../constants/branding';
+import { useDesktopUpdate } from '../../services/desktopUpdateService';
 
 interface SidebarProps {
   activeView: AppView;
@@ -217,6 +221,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     inventory: true,
   });
 
+  const { isUpdateAvailable, latestVersion, openModal, checkForUpdates, isChecking } = useDesktopUpdate();
+
   const toggleSubMenu = (menuId: string) => {
     setOpenSubMenus((prev) => ({
       ...prev,
@@ -233,19 +239,43 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex items-center justify-between h-16 px-4 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <img
-              src="/smartmind-logo.png"
+              src={SMARTMIND_LOGO_IMAGE || './smartmind-logo.png'}
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.dataset.retried) {
+                  img.dataset.retried = 'true';
+                  img.src = './smartmind-logo.png';
+                }
+              }}
               alt="SmartMind POS Logo"
               className="w-9 h-9 rounded-lg object-contain shrink-0"
             />
             {!isCompact && (
               <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <p className="font-display font-bold text-sm text-white tracking-tight truncate">
                     SmartMind POS
                   </p>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60 leading-none">
-                    v{APP_VERSION}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={checkForUpdates}
+                    title="Current version. Click to check for updates"
+                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60 leading-none cursor-pointer hover:bg-emerald-900 transition-colors inline-flex items-center gap-1"
+                  >
+                    <span>v{APP_VERSION}</span>
+                    {isChecking && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
+                  </button>
+                  {isUpdateAvailable && (
+                    <button
+                      type="button"
+                      onClick={openModal}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 animate-pulse flex items-center gap-1 cursor-pointer shadow-xs transition-colors shrink-0"
+                      title={`Click to install update v${latestVersion || '1.0.2'}`}
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>Update to v{latestVersion || '1.0.2'}</span>
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400 truncate">
                   Multi-Shop Cloud POS

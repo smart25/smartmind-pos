@@ -19,6 +19,7 @@ import {
   DEFAULT_DEMO_PASSWORD,
   validateLoginInput,
 } from '../utils/posCalculations';
+import { SMARTMIND_LOGO_IMAGE } from '../constants/branding';
 import {
   auth,
   googleProvider,
@@ -306,7 +307,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <div>
               <div className="flex items-center gap-3">
                 <img
-                  src="/smartmind-logo.png"
+                  src={SMARTMIND_LOGO_IMAGE || './smartmind-logo.png'}
+                  onError={(e) => {
+                    const img = e.currentTarget;
+                    if (!img.dataset.retried) {
+                      img.dataset.retried = 'true';
+                      img.src = './smartmind-logo.png';
+                    }
+                  }}
                   alt="SmartMind POS Logo"
                   className="w-10 h-10 rounded-xl object-contain shrink-0"
                 />

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, session, shell, Menu } from 'electron';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
@@ -242,12 +242,58 @@ async function createMainWindow(): Promise<void> {
   }
 
   if (mainWindow) {
+    setupApplicationMenu(mainWindow);
     setupAutoUpdater(mainWindow);
   }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+/**
+ * Native application menu with dedicated Update tab
+ */
+function setupApplicationMenu(win: BrowserWindow): void {
+  const isMac = process.platform === 'darwin';
+  const template: any[] = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      label: 'Update',
+      submenu: [
+        {
+          label: 'Check for Updates...',
+          accelerator: 'CmdOrCtrl+U',
+          click: async () => {
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('smartmind:menu-check-update');
+              if (autoUpdater && !isDev) {
+                try {
+                  await autoUpdater.checkForUpdates();
+                } catch (err: any) {
+                  win.webContents.send('smartmind:update-error', {
+                    message: err?.message || 'Error checking for updates',
+                  });
+                }
+              }
+            }
+          },
+        },
+        { type: 'separator' },
+        {
+          label: `Installed: v${app.getVersion()}`,
+          enabled: false,
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
 }
 
 /**
