@@ -4,7 +4,7 @@
   "description": "SmartMind Multi-Shop Point of Sale & Inventory Management System",
   "author": "SmartMind Technologies",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
