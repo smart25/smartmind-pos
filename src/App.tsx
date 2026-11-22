@@ -102,6 +102,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
 import { DataEnvironmentBanner } from './components/layout/DataEnvironmentBanner';
 import { AppUpdateNotificationModal } from './components/desktop/AppUpdateNotificationModal';
+import { PwaInstallBanner } from './components/pwa/PwaInstallBanner';
 import {
   LoginPage,
   AuthenticatedFirebaseIdentity,
@@ -5246,6 +5247,8 @@ useEffect(() => {
           onAuthenticatedFirebase={handleAuthenticatedFirebase}
         />
         <AppUpdateNotificationModal />
+      <PwaInstallBanner />
+        <PwaInstallBanner />
       </>
     );
   }
@@ -5302,6 +5305,8 @@ useEffect(() => {
           onSignOut={handleSignOut}
         />
         <AppUpdateNotificationModal />
+      <PwaInstallBanner />
+        <PwaInstallBanner />
       </div>
     );
   }
@@ -5489,6 +5494,8 @@ useEffect(() => {
           />
         </div>
         <AppUpdateNotificationModal />
+      <PwaInstallBanner />
+        <PwaInstallBanner />
       </div>
     );
   }
@@ -5526,6 +5533,8 @@ useEffect(() => {
           />
         </div>
         <AppUpdateNotificationModal />
+      <PwaInstallBanner />
+        <PwaInstallBanner />
       </div>
     );
   }
@@ -5830,6 +5839,7 @@ useEffect(() => {
         </div>
       </div>
       <AppUpdateNotificationModal />
+      <PwaInstallBanner />
     </div>
   );
 }
