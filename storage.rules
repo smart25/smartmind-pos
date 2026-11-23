@@ -41,12 +41,21 @@ service firebase.storage {
         getUserProfile().businessId == businessId;
     }
 
+    function hasPlatformAdminClaim() {
+      return isAuthenticated() && (
+        (('role' in request.auth.token) && request.auth.token.role == 'platform_admin') ||
+        (('platform_admin' in request.auth.token) && request.auth.token.platform_admin == true)
+      );
+    }
+
     function isPlatformAdmin() {
-      return hasUserDoc() &&
+      return hasPlatformAdminClaim() || (
+        hasUserDoc() &&
         getUserProfile().status == 'active' &&
         getUserProfile().role == 'platform_admin' &&
         (request.auth.token.email == "smartnwokolo@gmail.com" ||
-         request.auth.token.email == "smart@smartmindconcept.com");
+         request.auth.token.email == "smart@smartmindconcept.com")
+      );
     }
 
     function isBusinessOwnerOf(businessId) {

@@ -47,6 +47,9 @@ import type {
   StartPlatformAdminSupportSessionRequest,
   EndPlatformAdminSupportSessionRequest,
   PlatformAdminSupportSessionResponse,
+  GrantPlatformAdminRoleRequest,
+  GrantPlatformAdminRoleResponse,
+  SyncPlatformAdminClaimsResponse,
 } from '../functions/src/index';
 
 export interface InviteAuthorizedStaffResponse {
@@ -446,6 +449,22 @@ export const callSyncShopOperation: HttpsCallable<
 > = httpsCallable<SyncOperationPayload, SyncOperationResponse>(
   functions,
   'syncShopOperation'
+);
+
+export const callSyncPlatformAdminClaims: HttpsCallable<
+  Record<string, never>,
+  SyncPlatformAdminClaimsResponse
+> = httpsCallable<Record<string, never>, SyncPlatformAdminClaimsResponse>(
+  functions,
+  'syncPlatformAdminClaims'
+);
+
+export const callGrantPlatformAdminRole: HttpsCallable<
+  GrantPlatformAdminRoleRequest,
+  GrantPlatformAdminRoleResponse
+> = httpsCallable<GrantPlatformAdminRoleRequest, GrantPlatformAdminRoleResponse>(
+  functions,
+  'grantPlatformAdminRole'
 );
 
 export {

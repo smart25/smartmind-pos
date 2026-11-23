@@ -18,6 +18,7 @@ import {
   Phone,
   MapPin,
   Lock,
+  Key,
   Users,
   UserPlus,
   ArrowRight,
@@ -93,7 +94,11 @@ import {
   RepairLiveBusinessOwnerAuthResult,
   SendOwnerPasswordSetupEmailResult,
 } from '../services/liveFirestoreDataService';
-import { firebaseConfig } from '../firebase';
+import {
+  firebaseConfig,
+  callSyncPlatformAdminClaims,
+  callGrantPlatformAdminRole,
+} from '../firebase';
 import type {
   PlatformAdminSupportSessionResponse,
 } from '../firebase';
@@ -278,6 +283,64 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
   const [adminSelectedShopId, setAdminSelectedShopId] = useState<string>('');
   const [adminBrandingSaving, setAdminBrandingSaving] = useState<boolean>(false);
   const [adminBrandingError, setAdminBrandingError] = useState<string | null>(null);
+
+  // Platform Admin Custom Claims (Digital Keycard) State
+  const [syncingClaims, setSyncingClaims] = useState<boolean>(false);
+  const [claimsActionEmail, setClaimsActionEmail] = useState<string>('');
+  const [claimsActionLoading, setClaimsActionLoading] = useState<boolean>(false);
+  const [claimsFeedback, setClaimsFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
+  const handleSyncMyClaims = async () => {
+    setSyncingClaims(true);
+    setClaimsFeedback(null);
+    try {
+      const res = await callSyncPlatformAdminClaims({});
+      setClaimsFeedback({
+        type: 'success',
+        message: res.data.message || 'Platform administrator keycard claim applied to your session.',
+      });
+    } catch (err: any) {
+      setClaimsFeedback({
+        type: 'error',
+        message: err?.message || 'Failed to sync admin keycard claims.',
+      });
+    } finally {
+      setSyncingClaims(false);
+    }
+  };
+
+  const handleToggleAdminRole = async (enabled: boolean) => {
+    if (!claimsActionEmail.trim()) {
+      setClaimsFeedback({
+        type: 'error',
+        message: 'Please enter a valid user email address.',
+      });
+      return;
+    }
+    setClaimsActionLoading(true);
+    setClaimsFeedback(null);
+    try {
+      const res = await callGrantPlatformAdminRole({
+        targetEmail: claimsActionEmail.trim(),
+        enabled,
+      });
+      setClaimsFeedback({
+        type: 'success',
+        message: res.data.message,
+      });
+      setClaimsActionEmail('');
+    } catch (err: any) {
+      setClaimsFeedback({
+        type: 'error',
+        message: err?.message || 'Failed to update admin role.',
+      });
+    } finally {
+      setClaimsActionLoading(false);
+    }
+  };
 
   // Ensure workspace selection defaults to a valid business
   useEffect(() => {
@@ -4606,6 +4669,92 @@ if (!deleteResult) {
                       <div className="text-slate-400 text-[11px]">Production Firestore rules and configuration files are preserved and untouched.</div>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Cryptographic Keycard & Custom Claims Administration */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-4 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+                    <Key className="w-4 h-4 text-amber-400" />
+                    <span>Cryptographic Admin Keycard (Firebase Custom Claims)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Transition from hardcoded email checks to encrypted, token-based custom claims recognized across Firestore and Storage.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSyncMyClaims}
+                  disabled={syncingClaims}
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 self-start sm:self-auto"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>{syncingClaims ? 'Applying Keycard...' : 'Sync My Admin Keycard'}</span>
+                </button>
+              </div>
+
+              {claimsFeedback && (
+                <div
+                  className={`p-3 rounded-lg text-xs flex items-center justify-between ${
+                    claimsFeedback.type === 'success'
+                      ? 'bg-emerald-950/60 border border-emerald-800 text-emerald-200'
+                      : 'bg-red-950/60 border border-red-800 text-red-200'
+                  }`}
+                >
+                  <span>{claimsFeedback.message}</span>
+                  <button
+                    type="button"
+                    onClick={() => setClaimsFeedback(null)}
+                    className="text-xs underline ml-2 cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                <div className="space-y-2">
+                  <span className="font-semibold text-slate-200 block">Manage Administrator Privileges</span>
+                  <p className="text-[11px] text-slate-400">
+                    Grant or revoke the cryptographic <code className="text-amber-300">platform_admin</code> custom claim for any registered user email without editing rule files.
+                  </p>
+                  <div className="flex items-center gap-2 pt-1">
+                    <input
+                      type="email"
+                      value={claimsActionEmail}
+                      onChange={(e) => setClaimsActionEmail(e.target.value)}
+                      placeholder="admin.user@example.com"
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAdminRole(true)}
+                      disabled={claimsActionLoading || !claimsActionEmail.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs cursor-pointer transition whitespace-nowrap"
+                    >
+                      Grant
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAdminRole(false)}
+                      disabled={claimsActionLoading || !claimsActionEmail.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-red-400 disabled:opacity-50 font-semibold text-xs cursor-pointer transition whitespace-nowrap border border-slate-700"
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800/80 rounded-lg p-3 text-slate-300 space-y-1.5">
+                  <span className="font-semibold text-white block">Keycard Security Guarantees:</span>
+                  <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
+                    <li>Tokens are cryptographically signed by Google Private Keys.</li>
+                    <li>Eliminates reliance on hardcoded email addresses in database code.</li>
+                    <li>Backward compatible: existing verified administrator emails retain access.</li>
+                  </ul>
                 </div>
               </div>
             </div>

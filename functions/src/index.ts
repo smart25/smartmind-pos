@@ -22,6 +22,11 @@ import {
   executeInviteAuthorizedStaff,
   executeSetTenantStatus,
   executeResetUserPassword,
+  executeSyncPlatformAdminClaims,
+  executeGrantPlatformAdminRole,
+  GrantPlatformAdminRoleRequest,
+  GrantPlatformAdminRoleResponse,
+  SyncPlatformAdminClaimsResponse,
   ResetUserPasswordRequest,
   ProvisionBusinessRequest,
   ProvisionBusinessResponse,
@@ -184,6 +189,29 @@ export const resetUserPassword = wrapCallable<
   RESOLVED_DEPLOYMENT_REGION
 );
 
+export const syncPlatformAdminClaims = wrapCallable<
+  Record<string, never>,
+  SyncPlatformAdminClaimsResponse
+>(
+  (drivers, auth) =>
+    executeSyncPlatformAdminClaims(drivers.authDirectory, auth),
+  RESOLVED_DEPLOYMENT_REGION
+);
+
+export const grantPlatformAdminRole = wrapCallable<
+  GrantPlatformAdminRoleRequest,
+  GrantPlatformAdminRoleResponse
+>(
+  (drivers, auth, data) =>
+    executeGrantPlatformAdminRole(
+      drivers.dbDriver,
+      drivers.authDirectory,
+      auth,
+      data
+    ),
+  RESOLVED_DEPLOYMENT_REGION
+);
+
 export const CLOUD_FUNCTIONS_MANIFEST = {
   runtime: 'nodejs22',
   region: RESOLVED_DEPLOYMENT_REGION,
@@ -204,5 +232,7 @@ export const CLOUD_FUNCTIONS_MANIFEST = {
     'startPlatformAdminSupportSession',
     'endPlatformAdminSupportSession',
     'getPlatformAdminSupportSession',
+    'syncPlatformAdminClaims',
+    'grantPlatformAdminRole',
   ],
 } as const;

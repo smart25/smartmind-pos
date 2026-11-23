@@ -52,6 +52,8 @@ exports.executeSetTenantStatus = executeSetTenantStatus;
 exports.getOrInitServerAdmin = getOrInitServerAdmin;
 exports.wrapCallable = wrapCallable;
 exports.executeResetUserPassword = executeResetUserPassword;
+exports.executeSyncPlatformAdminClaims = executeSyncPlatformAdminClaims;
+exports.executeGrantPlatformAdminRole = executeGrantPlatformAdminRole;
 exports.PRODUCTION_FIREBASE_PROJECT_ID = 'gen-lang-client-0985802946';
 exports.EXPECTED_FIREBASE_PROJECT_ID = exports.PRODUCTION_FIREBASE_PROJECT_ID;
 exports.STAGING_FIREBASE_PROJECT_ID = 'smartmind-pos-staging';
@@ -480,13 +482,15 @@ function assertVerifiedAuthContext(auth) {
     return auth;
 }
 async function assertCallerIsActivePlatformAdmin(tx, auth) {
+    const hasAdminClaim = auth.token?.role === 'platform_admin' ||
+        auth.token?.platform_admin === true;
     const callerProfile = await tx.getDoc(`users/${auth.uid}`);
     const callerEmail = (auth.token?.email || '').trim().toLowerCase();
-    if (!callerEmail || !isAuthorizedPlatformAdminEmail(callerEmail)) {
-        throw new Error(`PERMISSION_DENIED: Email "${callerEmail || 'unknown'}" is not authorized as the Platform Administrator.`);
+    if (!hasAdminClaim && (!callerEmail || !isAuthorizedPlatformAdminEmail(callerEmail))) {
+        throw new Error(`PERMISSION_DENIED: User "${callerEmail || auth.uid}" is not authorized as the Platform Administrator.`);
     }
     if (!callerProfile) {
-        throw new Error(`PERMISSION_DENIED: Platform Administrator profile at /users/${auth.uid} has not been initialized. Verified email alone does not grant administrator privileges without an active administrator profile.`);
+        throw new Error(`PERMISSION_DENIED: Platform Administrator profile at /users/${auth.uid} has not been initialized. Verified credentials alone do not grant administrator privileges without an active administrator profile.`);
     }
     if (callerProfile.status !== 'active') {
         throw new Error('PERMISSION_DENIED: Caller user profile is suspended.');
@@ -498,8 +502,7 @@ async function assertCallerIsActivePlatformAdmin(tx, auth) {
         .trim()
         .toLowerCase();
     if (callerProfile.id !== auth.uid ||
-        profileEmail !== callerEmail ||
-        !isAuthorizedPlatformAdminEmail(profileEmail)) {
+        (!hasAdminClaim && (profileEmail !== callerEmail || !isAuthorizedPlatformAdminEmail(profileEmail)))) {
         throw new Error('PERMISSION_DENIED: Caller profile identity does not match the verified Platform Administrator account.');
     }
     return callerProfile;
@@ -2844,6 +2847,9 @@ function createFirebaseAdminDrivers() {
                 displayName: updated.displayName || '',
             };
         },
+        async setCustomUserClaims(uid, customUserClaims) {
+            await adminAuth.setCustomUserClaims(uid, customUserClaims);
+        },
     };
     return { dbDriver, authDirectory };
 }
@@ -2971,6 +2977,80 @@ async function executeResetUserPassword(dbDriver, authDirectory, auth, input) {
             success: true,
             message: `Password updated successfully in Firebase Authentication for ${cleanEmail}.`,
             targetUserId: targetProfile.id,
+        };
+    });
+}
+/**
+ * Stamps the cryptographic platform_admin Custom Claim onto the caller's Firebase Auth token.
+ * Can be called by authorized bootstrap platform admins or existing platform admins.
+ */
+async function executeSyncPlatformAdminClaims(authDirectory, auth) {
+    const verifiedAuth = assertVerifiedAuthContext(auth);
+    const callerEmail = (verifiedAuth.token?.email || '').trim().toLowerCase();
+    const isAuthorizedEmail = isAuthorizedPlatformAdminEmail(callerEmail);
+    const hasAdminClaim = verifiedAuth.token?.role === 'platform_admin' ||
+        verifiedAuth.token?.platform_admin === true;
+    if (!isAuthorizedEmail && !hasAdminClaim) {
+        throw new Error(`PERMISSION_DENIED: User "${callerEmail || verifiedAuth.uid}" is not authorized as a Platform Administrator.`);
+    }
+    if (!authDirectory || typeof authDirectory.setCustomUserClaims !== 'function') {
+        throw new Error('FIREBASE_ADMIN_UNAVAILABLE: Authentication service is required.');
+    }
+    await authDirectory.setCustomUserClaims(verifiedAuth.uid, {
+        role: 'platform_admin',
+        platform_admin: true,
+    });
+    return {
+        success: true,
+        claimsApplied: true,
+        targetEmail: callerEmail,
+        message: `Platform administrator custom claim successfully stamped on UID "${verifiedAuth.uid}".`,
+    };
+}
+/**
+ * Allows an active Platform Administrator to grant or revoke the platform_admin Custom Claim
+ * on any user by email address, updating their Firebase Auth claims and Firestore profile.
+ */
+async function executeGrantPlatformAdminRole(dbDriver, authDirectory, auth, input) {
+    const verifiedAuth = assertVerifiedAuthContext(auth);
+    const cleanEmail = (input?.targetEmail || '').trim().toLowerCase();
+    if (!isValidEmailAddress(cleanEmail)) {
+        throw new Error('INVALID_ARGUMENT: A valid targetEmail address is required.');
+    }
+    if (!authDirectory || typeof authDirectory.setCustomUserClaims !== 'function') {
+        throw new Error('FIREBASE_ADMIN_UNAVAILABLE: Authentication service with custom claims management is required.');
+    }
+    return await dbDriver.runTransaction(async (tx) => {
+        await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
+        const authUser = await authDirectory.getUserByEmail(cleanEmail);
+        if (!authUser) {
+            throw new Error(`NOT_FOUND: User "${cleanEmail}" does not exist in Firebase Authentication.`);
+        }
+        const isGranting = Boolean(input.enabled);
+        const claims = isGranting
+            ? { role: 'platform_admin', platform_admin: true }
+            : { role: 'user', platform_admin: false };
+        await authDirectory.setCustomUserClaims(authUser.uid, claims);
+        const userDocPath = `users/${authUser.uid}`;
+        const existingProfile = await tx.getDoc(userDocPath);
+        const nowIso = new Date().toISOString();
+        if (existingProfile) {
+            await tx.setDoc(userDocPath, {
+                ...existingProfile,
+                role: isGranting ? 'platform_admin' : 'cashier',
+                roleLabel: isGranting ? 'Platform Administrator' : (existingProfile.roleLabel || 'Cashier'),
+                businessId: isGranting ? 'PLATFORM' : (existingProfile.businessId || 'PLATFORM'),
+                updatedAt: nowIso,
+            });
+        }
+        return {
+            success: true,
+            targetEmail: cleanEmail,
+            targetUid: authUser.uid,
+            isPlatformAdmin: isGranting,
+            message: isGranting
+                ? `Custom claim [role: platform_admin] granted to ${cleanEmail}.`
+                : `Custom claim [role: platform_admin] revoked from ${cleanEmail}.`,
         };
     });
 }

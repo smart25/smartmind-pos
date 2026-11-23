@@ -26,7 +26,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CLOUD_FUNCTIONS_MANIFEST = exports.resetUserPassword = exports.getPlatformAdminSupportSession = exports.endPlatformAdminSupportSession = exports.startPlatformAdminSupportSession = exports.setTenantStatus = exports.inviteAuthorizedStaff = exports.syncShopOperation = exports.syncPosOperation = exports.repairBusinessOwnerAuth = exports.provisionBusinessAndPrimaryOwner = exports.CLOUD_FUNCTIONS_REGION = exports.RESOLVED_FIRESTORE_DATABASE_ID = exports.RESOLVED_DEPLOYMENT_REGION = void 0;
+exports.CLOUD_FUNCTIONS_MANIFEST = exports.grantPlatformAdminRole = exports.syncPlatformAdminClaims = exports.resetUserPassword = exports.getPlatformAdminSupportSession = exports.endPlatformAdminSupportSession = exports.startPlatformAdminSupportSession = exports.setTenantStatus = exports.inviteAuthorizedStaff = exports.syncShopOperation = exports.syncPosOperation = exports.repairBusinessOwnerAuth = exports.provisionBusinessAndPrimaryOwner = exports.CLOUD_FUNCTIONS_REGION = exports.RESOLVED_FIRESTORE_DATABASE_ID = exports.RESOLVED_DEPLOYMENT_REGION = void 0;
 const core_1 = require("./core");
 // Re-export all core types, constants, validators, and handlers
 __exportStar(require("./core"), exports);
@@ -57,6 +57,8 @@ exports.startPlatformAdminSupportSession = (0, core_1.wrapCallable)((drivers, au
 exports.endPlatformAdminSupportSession = (0, core_1.wrapCallable)((drivers, auth, data) => (0, core_1.executeEndPlatformAdminSupportSession)(drivers.dbDriver, auth, data), exports.RESOLVED_DEPLOYMENT_REGION);
 exports.getPlatformAdminSupportSession = (0, core_1.wrapCallable)((drivers, auth) => (0, core_1.executeGetPlatformAdminSupportSession)(drivers.dbDriver, auth), exports.RESOLVED_DEPLOYMENT_REGION);
 exports.resetUserPassword = (0, core_1.wrapCallable)((drivers, auth, data) => (0, core_1.executeResetUserPassword)(drivers.dbDriver, drivers.authDirectory, auth, data), exports.RESOLVED_DEPLOYMENT_REGION);
+exports.syncPlatformAdminClaims = (0, core_1.wrapCallable)((drivers, auth) => (0, core_1.executeSyncPlatformAdminClaims)(drivers.authDirectory, auth), exports.RESOLVED_DEPLOYMENT_REGION);
+exports.grantPlatformAdminRole = (0, core_1.wrapCallable)((drivers, auth, data) => (0, core_1.executeGrantPlatformAdminRole)(drivers.dbDriver, drivers.authDirectory, auth, data), exports.RESOLVED_DEPLOYMENT_REGION);
 exports.CLOUD_FUNCTIONS_MANIFEST = {
     runtime: 'nodejs22',
     region: exports.RESOLVED_DEPLOYMENT_REGION,
@@ -77,6 +79,8 @@ exports.CLOUD_FUNCTIONS_MANIFEST = {
         'startPlatformAdminSupportSession',
         'endPlatformAdminSupportSession',
         'getPlatformAdminSupportSession',
+        'syncPlatformAdminClaims',
+        'grantPlatformAdminRole',
     ],
 };
 //# sourceMappingURL=index.js.map
