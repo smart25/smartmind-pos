@@ -771,6 +771,7 @@ export interface ServerAuthDirectory {
     uid: string,
     customUserClaims: Record<string, any> | null
   ): Promise<void>;
+  generatePasswordResetLink?(email: string): Promise<string>;
 }
 
 // ============================================================================
@@ -4116,6 +4117,9 @@ function createFirebaseAdminDrivers(): {
     ) {
       await adminAuth.setCustomUserClaims(uid, customUserClaims);
     },
+    async generatePasswordResetLink(email: string) {
+      return await adminAuth.generatePasswordResetLink(email.trim().toLowerCase());
+    },
   };
 
   return { dbDriver, authDirectory };
@@ -4310,6 +4314,8 @@ export interface GrantPlatformAdminRoleResponse {
   targetUid: string;
   isPlatformAdmin: boolean;
   message: string;
+  createdUser?: boolean;
+  passwordResetLink?: string;
 }
 
 export interface SyncPlatformAdminClaimsResponse {
@@ -4384,12 +4390,36 @@ export async function executeGrantPlatformAdminRole(
   return await dbDriver.runTransaction(async (tx) => {
     await assertCallerIsActivePlatformAdmin(tx, verifiedAuth);
 
-    const authUser = await authDirectory.getUserByEmail(cleanEmail);
+    const isGranting = Boolean(input.enabled);
+    let authUser = await authDirectory.getUserByEmail(cleanEmail);
+    let createdUser = false;
+    let passwordResetLink: string | undefined = undefined;
+
     if (!authUser) {
-      throw new Error(`NOT_FOUND: User "${cleanEmail}" does not exist in Firebase Authentication.`);
+      if (!isGranting) {
+        throw new Error(`NOT_FOUND: User "${cleanEmail}" does not exist in Firebase Authentication.`);
+      }
+      if (typeof authDirectory.createUser !== 'function') {
+        throw new Error('FIREBASE_ADMIN_UNAVAILABLE: User creation is not supported on this auth driver.');
+      }
+
+      const generatedDisplayName = cleanEmail.split('@')[0];
+      authUser = await authDirectory.createUser({
+        email: cleanEmail,
+        displayName: generatedDisplayName,
+        emailVerified: false,
+      });
+      createdUser = true;
     }
 
-    const isGranting = Boolean(input.enabled);
+    if (isGranting && typeof authDirectory.generatePasswordResetLink === 'function') {
+      try {
+        passwordResetLink = await authDirectory.generatePasswordResetLink(cleanEmail);
+      } catch (linkErr) {
+        // Link generation is a helper; continue granting claim even if default ActionCodeSettings isn't configured
+      }
+    }
+
     const claims = isGranting
       ? { role: 'platform_admin', platform_admin: true }
       : { role: 'user', platform_admin: false };
@@ -4408,6 +4438,19 @@ export async function executeGrantPlatformAdminRole(
         businessId: isGranting ? 'PLATFORM' : (existingProfile.businessId || 'PLATFORM'),
         updatedAt: nowIso,
       });
+    } else if (isGranting) {
+      await tx.setDoc(userDocPath, {
+        id: authUser.uid,
+        email: cleanEmail,
+        name: authUser.displayName || cleanEmail.split('@')[0],
+        role: 'platform_admin',
+        roleLabel: 'Platform Administrator',
+        businessId: 'PLATFORM',
+        shopIds: [],
+        status: 'active',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
     }
 
     return {
@@ -4415,8 +4458,12 @@ export async function executeGrantPlatformAdminRole(
       targetEmail: cleanEmail,
       targetUid: authUser.uid,
       isPlatformAdmin: isGranting,
+      createdUser,
+      passwordResetLink,
       message: isGranting
-        ? `Custom claim [role: platform_admin] granted to ${cleanEmail}.`
+        ? (createdUser
+            ? `New user account created and platform_admin claim granted to ${cleanEmail}.`
+            : `Custom claim [role: platform_admin] granted to ${cleanEmail}.`)
         : `Custom claim [role: platform_admin] revoked from ${cleanEmail}.`,
     };
   });

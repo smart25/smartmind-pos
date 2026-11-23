@@ -97,6 +97,8 @@ import {
 } from '../services/liveFirestoreDataService';
 import {
   firebaseConfig,
+  auth,
+  sendPasswordResetEmail,
   callSyncPlatformAdminClaims,
   callGrantPlatformAdminRole,
 } from '../firebase';
@@ -292,6 +294,7 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
   const [claimsFeedback, setClaimsFeedback] = useState<{
     type: 'success' | 'error';
     message: string;
+    link?: string;
   } | null>(null);
 
   const handleSyncMyClaims = async () => {
@@ -314,7 +317,8 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
   };
 
   const handleToggleAdminRole = async (enabled: boolean) => {
-    if (!claimsActionEmail.trim()) {
+    const cleanEmail = claimsActionEmail.trim().toLowerCase();
+    if (!cleanEmail) {
       setClaimsFeedback({
         type: 'error',
         message: 'Please enter a valid user email address.',
@@ -325,12 +329,25 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
     setClaimsFeedback(null);
     try {
       const res = await callGrantPlatformAdminRole({
-        targetEmail: claimsActionEmail.trim(),
+        targetEmail: cleanEmail,
         enabled,
       });
+
+      let extraNotice = '';
+      if (enabled && res.data.createdUser) {
+        // Automatically dispatch Firebase password reset email to deliver setup link directly to their inbox
+        try {
+          await sendPasswordResetEmail(auth, cleanEmail);
+          extraNotice = ' A password setup link has been automatically emailed to their inbox.';
+        } catch {
+          extraNotice = ' User created. They can click "Forgot Password" on login or use the link below.';
+        }
+      }
+
       setClaimsFeedback({
         type: 'success',
-        message: res.data.message,
+        message: `${res.data.message}${extraNotice}`,
+        link: res.data.passwordResetLink,
       });
       setClaimsActionEmail('');
     } catch (err: any) {
@@ -4759,20 +4776,34 @@ if (!deleteResult) {
 
               {claimsFeedback && (
                 <div
-                  className={`p-3 rounded-lg text-xs flex items-center justify-between ${
+                  className={`p-3 rounded-lg text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
                     claimsFeedback.type === 'success'
                       ? 'bg-emerald-950/60 border border-emerald-800 text-emerald-200'
                       : 'bg-red-950/60 border border-red-800 text-red-200'
                   }`}
                 >
-                  <span>{claimsFeedback.message}</span>
-                  <button
-                    type="button"
-                    onClick={() => setClaimsFeedback(null)}
-                    className="text-xs underline ml-2 cursor-pointer"
-                  >
-                    Dismiss
-                  </button>
+                  <span className="flex-1">{claimsFeedback.message}</span>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    {claimsFeedback.link && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(claimsFeedback.link!);
+                          alert('Password setup link copied to clipboard!');
+                        }}
+                        className="px-2.5 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-white font-medium text-[11px] transition cursor-pointer"
+                      >
+                        Copy Password Link
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setClaimsFeedback(null)}
+                      className="text-xs underline cursor-pointer"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 </div>
               )}
 
