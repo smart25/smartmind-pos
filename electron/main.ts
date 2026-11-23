@@ -190,16 +190,23 @@ async function createMainWindow(): Promise<void> {
     mainWindow?.focus();
   });
 
-  // Support F12 and Ctrl+Shift+I to toggle DevTools for diagnostic inspection
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (
-      input.key === 'F12' ||
-      (input.control && input.shift && input.key.toLowerCase() === 'i')
-    ) {
-      mainWindow?.webContents.toggleDevTools();
-      event.preventDefault();
-    }
-  });
+  // Support F12 and Ctrl+Shift+I to toggle DevTools strictly in development mode.
+  // In production packaged builds, DevTools is completely disabled to protect POS counter terminals.
+  if (isDev) {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (
+        input.key === 'F12' ||
+        (input.control && input.shift && input.key.toLowerCase() === 'i')
+      ) {
+        mainWindow?.webContents.toggleDevTools();
+        event.preventDefault();
+      }
+    });
+  } else {
+    mainWindow.webContents.on('devtools-opened', () => {
+      mainWindow?.webContents.closeDevTools();
+    });
+  }
 
   // Security: Deny window.open requests and open external links safely in user's OS browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
