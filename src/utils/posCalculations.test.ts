@@ -143,21 +143,27 @@ test('generateProductSalesSummaryCsvString outputs product-aggregated best selle
     shopId: 'shp-1',
     receiptNumber: 'RCP-001',
     createdAt: '2026-11-23 10:00:00',
-    cashierId: 'u-1',
+    cashierUserId: 'u-1',
     cashierName: 'uchenna',
     paymentMethod: 'cash',
     subtotal: 3000,
     taxAmount: 0,
     totalAmount: 3000,
+    terminalId: 't-1',
+    discountAmount: 0,
+    taxRatePercent: 0,
+    changeDue: 0,
+    syncStatus: 'synced',
     amountTendered: 3000,
-    changeGiven: 0,
     status: 'completed',
     items: [
       {
         id: 'item-1',
-        saleId: 's-1',
         productId: 'prod-beef',
         productName: 'Beef',
+        sku: 'BEEF-1001',
+        barcode: '6130009911',
+        costPrice: 700,
         unit: 'pcs',
         quantity: 2,
         unitPrice: 1000,
@@ -165,9 +171,11 @@ test('generateProductSalesSummaryCsvString outputs product-aggregated best selle
       },
       {
         id: 'item-2',
-        saleId: 's-1',
         productId: 'prod-amala',
         productName: 'Amala',
+        sku: 'AMAL-1002',
+        barcode: '',
+        costPrice: 250,
         unit: 'pcs',
         quantity: 2,
         unitPrice: 500,
@@ -182,21 +190,27 @@ test('generateProductSalesSummaryCsvString outputs product-aggregated best selle
     shopId: 'shp-1',
     receiptNumber: 'RCP-002',
     createdAt: '2026-11-23 11:00:00',
-    cashierId: 'u-1',
+    cashierUserId: 'u-1',
     cashierName: 'uchenna',
     paymentMethod: 'pos_card',
     subtotal: 8000,
     taxAmount: 0,
     totalAmount: 8000,
+    terminalId: 't-1',
+    discountAmount: 0,
+    taxRatePercent: 0,
+    changeDue: 0,
+    syncStatus: 'synced',
     amountTendered: 8000,
-    changeGiven: 0,
     status: 'completed',
     items: [
       {
         id: 'item-3',
-        saleId: 's-2',
         productId: 'prod-beef',
         productName: 'Beef',
+        sku: 'BEEF-1001',
+        barcode: '6130009911',
+        costPrice: 700,
         unit: 'pcs',
         quantity: 8,
         unitPrice: 1000,
@@ -1244,14 +1258,15 @@ test('generateInventoryCsvTemplateString and parseInventoryCsvString generate va
   assert.equal(templateCsv.startsWith('\uFEFFProduct Name,Barcode,Category,Unit,Selling Price'), true);
   assert.equal(templateCsv.includes(',SKU,'), false);
 
-  const testCsvContent = `Product Name,Barcode,Category,Unit,Selling Price,Cost Price,Stock Quantity,Reorder Level,Tax Exempt,Active
-Indomie Instant Noodles 70g,613000123456,Noodles & Pasta,Pack,250,200,100,20,No,Yes
-Peak Milk Tin 160g,613000789012,Beverages,Can,450,380,50,10,No,Yes
-Invalid Item Line,,,, -100,0,0,0,No,Yes`;
+  const testCsvContent = `Product Name,Barcode,Category,Unit,Selling Price,Cost Price,Stock Quantity,Reorder Level,Expiry Date,Tax Exempt,Active
+Indomie Instant Noodles 70g,613000123456,Noodles & Pasta,Pack,250,200,100,20,2027-12-31,No,Yes
+Cooked Beef Portion,,Kitchen & Food,Portion,1000,700,40,5,,No,Yes
+Peak Milk Tin 160g,613000789012,Beverages,Can,450,380,50,10,30/06/2027,No,Yes
+Invalid Item Line,,,, -100,0,0,0,,No,Yes`;
 
   const parsed = parseInventoryCsvString(testCsvContent);
-  assert.equal(parsed.totalRows, 3);
-  assert.equal(parsed.validItems.length, 2);
+  assert.equal(parsed.totalRows, 4);
+  assert.equal(parsed.validItems.length, 3);
   assert.equal(parsed.errors.length, 1);
 
   const item1 = parsed.validItems[0];
@@ -1260,11 +1275,22 @@ Invalid Item Line,,,, -100,0,0,0,No,Yes`;
   assert.equal(item1.sellingPrice, 250);
   assert.equal(item1.costPrice, 200);
   assert.equal(item1.stockQuantity, 100);
+  assert.equal(item1.hasExpiry, true);
+  assert.equal(item1.expiryDate, '2027-12-31');
 
+  // Item 2 has no barcode (unbarcoded meal item)
   const item2 = parsed.validItems[1];
-  assert.equal(item2.name, 'Peak Milk Tin 160g');
-  assert.equal(item2.sku.includes('1002'), true); // Auto generated smart SKU (e.g. PMT1-1002)
-  assert.equal(item2.sellingPrice, 450);
+  assert.equal(item2.name, 'Cooked Beef Portion');
+  assert.equal(item2.hasExpiry, false);
+  assert.equal(item2.expiryDate, null);
+
+  // Item 3 has DD/MM/YYYY date
+  const item3 = parsed.validItems[2];
+  assert.equal(item3.name, 'Peak Milk Tin 160g');
+  assert.equal(item3.sku.includes('1003'), true);
+  assert.equal(item3.sellingPrice, 450);
+  assert.equal(item3.hasExpiry, true);
+  assert.equal(item3.expiryDate, '2027-06-30');
   const testCsvContentWithDecimals = `Product Name,Barcode,Category,Unit,Selling Price,Cost Price,Stock Quantity,Reorder Level,Tax Exempt,Active
 Indomie Instant Noodles 70g,613000123456.0,Noodles & Pasta,Pack,250,200,100,20,No,Yes
 Peak Milk Tin 160g,613000789012.00,Beverages,Can,450,380,50,10,No,Yes

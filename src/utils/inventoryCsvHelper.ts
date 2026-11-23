@@ -12,6 +12,8 @@ export interface ParsedInventoryItem {
   costPrice: number;
   stockQuantity: number;
   reorderLevel: number;
+  hasExpiry?: boolean;
+  expiryDate?: string | null;
   taxExempt: boolean;
   isActive: boolean;
   isExisting: boolean;
@@ -44,6 +46,7 @@ export const INVENTORY_CSV_HEADERS = [
   'Cost Price',
   'Stock Quantity',
   'Reorder Level',
+  'Expiry Date',
   'Tax Exempt',
   'Active',
 ];
@@ -63,6 +66,20 @@ export function generateInventoryCsvTemplateString(): string {
       '950',
       '50',
       '10',
+      '2027-12-31',
+      'No',
+      'Yes',
+    ],
+    [
+      'Cooked Beef (Portion)',
+      '',
+      'Kitchen & Fast Food',
+      'Portion',
+      '1000',
+      '650',
+      '40',
+      '5',
+      '',
       'No',
       'Yes',
     ],
@@ -75,42 +92,33 @@ export function generateInventoryCsvTemplateString(): string {
       '3200',
       '30',
       '5',
+      '2027-06-30',
       'No',
       'Yes',
     ],
     [
-      'Peak Milk Powder 350g',
-      '613000118277',
+      'Amala Swallows',
+      '',
+      'Kitchen & Fast Food',
+      'Portion',
+      '500',
+      '250',
+      '60',
+      '10',
+      '',
+      'No',
+      'Yes',
+    ],
+    [
+      'Eva Table Water 75cl',
+      '613000771234',
       'Beverages & Drinks',
-      'Can',
-      '2400',
-      '1950',
-      '40',
-      '8',
-      'No',
-      'Yes',
-    ],
-    [
-      'Dangote Refined Salt 1kg',
-      '613000339100',
-      'Groceries & Baking',
-      'Kg',
-      '600',
-      '450',
-      '100',
-      '15',
-      'No',
-      'Yes',
-    ],
-    [
-      'Eve Dishwashing Liquid 750ml',
-      '613000552911',
-      'Household & Cleaning',
       'Bottle',
-      '1500',
-      '1150',
-      '25',
-      '5',
+      '300',
+      '200',
+      '100',
+      '20',
+      '2027-10-15',
       'No',
       'Yes',
     ],
@@ -179,6 +187,51 @@ export function parseCleanBarcode(val: string | undefined): string {
   }
 
   return clean.replace(/[^a-zA-Z0-9-]/g, '').trim();
+}
+
+/**
+ * Safely parses expiry dates in YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, or MM/DD/YYYY formats.
+ */
+export function parseCleanExpiryDate(val: string | undefined): {
+  hasExpiry: boolean;
+  expiryDate: string | null;
+} {
+  if (!val) return { hasExpiry: false, expiryDate: null };
+  const clean = val.trim();
+  if (
+    !clean ||
+    ['n/a', 'na', 'none', 'no', 'nil', '-', 'null', 'undefined'].includes(
+      clean.toLowerCase()
+    )
+  ) {
+    return { hasExpiry: false, expiryDate: null };
+  }
+
+  // Format 1: YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    return { hasExpiry: true, expiryDate: clean };
+  }
+
+  // Format 2: DD/MM/YYYY or DD-MM-YYYY
+  const dmyMatch = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (dmyMatch) {
+    const day = dmyMatch[1].padStart(2, '0');
+    const month = dmyMatch[2].padStart(2, '0');
+    const year = dmyMatch[3];
+    return { hasExpiry: true, expiryDate: `${year}-${month}-${day}` };
+  }
+
+  // Format 3: General Date.parse
+  const timestamp = Date.parse(clean);
+  if (!Number.isNaN(timestamp)) {
+    const d = new Date(timestamp);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return { hasExpiry: true, expiryDate: `${yyyy}-${mm}-${dd}` };
+  }
+
+  return { hasExpiry: false, expiryDate: null };
 }
 
 /**
@@ -278,17 +331,18 @@ export function parseInventoryCsvString(
     );
   };
 
-  const nameIdx = findColIndex(['productname', 'name', 'itemname', 'product', 'title', 'item']);
-  const skuIdx = findColIndex(['sku', 'code', 'productcode', 'itemcode', 'stockkeepingunit']);
-  const barcodeIdx = findColIndex(['barcode', 'upc', 'ean', 'qrcode']);
-  const categoryIdx = findColIndex(['category', 'categoryname', 'productcategory', 'department', 'dept']);
-  const unitIdx = findColIndex(['unit', 'unitofmeasurement', 'uom', 'pack', 'measurement']);
-  const sellingPriceIdx = findColIndex(['sellingprice', 'price', 'unitprice', 'retailprice', 'rate', 'amount']);
-  const costPriceIdx = findColIndex(['costprice', 'cost', 'buyprice', 'purchaseprice']);
-  const stockQtyIdx = findColIndex(['stockquantity', 'stock', 'qty', 'quantity', 'initialstock', 'openingstock']);
-  const reorderIdx = findColIndex(['reorderlevel', 'minstock', 'minimumstock', 'alertlevel']);
-  const taxIdx = findColIndex(['taxexempt', 'taxable', 'vat']);
-  const activeIdx = findColIndex(['active', 'status', 'isactive']);
+  const nameIdx = findColIndex(['productname', 'name', 'itemname', 'product', 'title', 'item', 'itemdescription']);
+  const skuIdx = findColIndex(['sku', 'code', 'productcode', 'itemcode', 'stockkeepingunit', 'skuoptional']);
+  const barcodeIdx = findColIndex(['barcode', 'upc', 'ean', 'qrcode', 'barcodeoptional', 'barcodeopt', 'barcodes', 'scancode']);
+  const categoryIdx = findColIndex(['category', 'categoryname', 'productcategory', 'department', 'dept', 'group']);
+  const unitIdx = findColIndex(['unit', 'unitofmeasurement', 'uom', 'pack', 'measurement', 'unitname']);
+  const sellingPriceIdx = findColIndex(['sellingprice', 'price', 'unitprice', 'retailprice', 'rate', 'amount', 'selling']);
+  const costPriceIdx = findColIndex(['costprice', 'cost', 'buyprice', 'purchaseprice', 'buyingprice', 'costrate']);
+  const stockQtyIdx = findColIndex(['stockquantity', 'stock', 'qty', 'quantity', 'initialstock', 'openingstock', 'currentstock']);
+  const reorderIdx = findColIndex(['reorderlevel', 'minstock', 'minimumstock', 'alertlevel', 'reorderpoint', 'reorder', 'alertqty']);
+  const expiryIdx = findColIndex(['expirydate', 'expiry', 'expirationdate', 'expiration', 'expdate', 'bestbefore', 'bbdate']);
+  const taxIdx = findColIndex(['taxexempt', 'taxable', 'vat', 'tax', 'exempt']);
+  const activeIdx = findColIndex(['active', 'status', 'isactive', 'enabled']);
 
   if (nameIdx === -1) {
     return {
@@ -388,6 +442,9 @@ export function parseInventoryCsvString(
     const rawTax = taxIdx !== -1 ? (cols[taxIdx] || '').trim().toLowerCase() : '';
     const taxExempt = rawTax === 'yes' || rawTax === 'true' || rawTax === '1';
 
+    const rawExpiry = expiryIdx !== -1 ? cols[expiryIdx] : '';
+    const { hasExpiry, expiryDate } = parseCleanExpiryDate(rawExpiry);
+
     const rawActive = activeIdx !== -1 ? (cols[activeIdx] || '').trim().toLowerCase() : '';
     const isActive =
       rawActive === '' ||
@@ -426,6 +483,8 @@ export function parseInventoryCsvString(
       costPrice,
       stockQuantity,
       reorderLevel,
+      hasExpiry,
+      expiryDate,
       taxExempt,
       isActive,
       isExisting: Boolean(existingMatch),
