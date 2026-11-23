@@ -112,7 +112,11 @@ test('formatPaymentMethodLabel maps codes to user-friendly titles', () => {
   assert.equal(formatPaymentMethodLabel('split_payment'), 'Split Payment');
 });
 
-import { escapeCsvCell, generateSalesSummaryCsvString } from './csvGenerator';
+import {
+  escapeCsvCell,
+  generateSalesSummaryCsvString,
+  generateProductSalesSummaryCsvString,
+} from './csvGenerator';
 
 test('escapeCsvCell escapes commas, quotes, and newlines correctly', () => {
   assert.equal(escapeCsvCell('Hello World'), 'Hello World');
@@ -130,6 +134,91 @@ test('generateSalesSummaryCsvString outputs exact 8 headers matching PDF', () =>
     lines[0],
     '#,Date & Time,Product Name,Unit of Measurement,Quantity,Amount,Payment Method,Staff'
   );
+});
+
+test('generateProductSalesSummaryCsvString outputs product-aggregated best sellers CSV', () => {
+  const sampleSale: SaleTransaction = {
+    id: 's-1',
+    businessId: 'biz-1',
+    shopId: 'shp-1',
+    receiptNumber: 'RCP-001',
+    createdAt: '2026-11-23 10:00:00',
+    cashierId: 'u-1',
+    cashierName: 'uchenna',
+    paymentMethod: 'cash',
+    subtotal: 3000,
+    taxAmount: 0,
+    totalAmount: 3000,
+    amountTendered: 3000,
+    changeGiven: 0,
+    status: 'completed',
+    items: [
+      {
+        id: 'item-1',
+        saleId: 's-1',
+        productId: 'prod-beef',
+        productName: 'Beef',
+        unit: 'pcs',
+        quantity: 2,
+        unitPrice: 1000,
+        lineTotal: 2000,
+      },
+      {
+        id: 'item-2',
+        saleId: 's-1',
+        productId: 'prod-amala',
+        productName: 'Amala',
+        unit: 'pcs',
+        quantity: 2,
+        unitPrice: 500,
+        lineTotal: 1000,
+      },
+    ],
+  };
+
+  const sampleSale2: SaleTransaction = {
+    id: 's-2',
+    businessId: 'biz-1',
+    shopId: 'shp-1',
+    receiptNumber: 'RCP-002',
+    createdAt: '2026-11-23 11:00:00',
+    cashierId: 'u-1',
+    cashierName: 'uchenna',
+    paymentMethod: 'pos_card',
+    subtotal: 8000,
+    taxAmount: 0,
+    totalAmount: 8000,
+    amountTendered: 8000,
+    changeGiven: 0,
+    status: 'completed',
+    items: [
+      {
+        id: 'item-3',
+        saleId: 's-2',
+        productId: 'prod-beef',
+        productName: 'Beef',
+        unit: 'pcs',
+        quantity: 8,
+        unitPrice: 1000,
+        lineTotal: 8000,
+      },
+    ],
+  };
+
+  const csv = generateProductSalesSummaryCsvString({
+    sales: [sampleSale, sampleSale2],
+  });
+  const cleanCsv = csv.replace(/^\uFEFF/, '');
+  const lines = cleanCsv.split('\r\n');
+
+  assert.equal(
+    lines[0],
+    '#,Product Name,Unit of Measurement,Total Quantity Sold,Total Amount,Average Unit Price,Receipts Count,% of Total Sales'
+  );
+  // Rank #1 should be Beef with quantity 10 (2 + 8), totalAmount 10000
+  assert.match(lines[1], /^1,Beef,pcs,10,10000\.00,1000\.00,2,/);
+  // Rank #2 should be Amala with quantity 2, totalAmount 1000
+  assert.match(lines[2], /^2,Amala,pcs,2,1000\.00,500\.00,1,/);
 });
 test('getDateRangeBoundsForPreset returns correct bounds for today, yesterday, and all', () => {
   const refDate = '2026-10-23';

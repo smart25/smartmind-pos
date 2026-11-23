@@ -17,6 +17,7 @@ export interface SalesSummaryCsvOptions {
   symbol?: string;
   products?: Product[];
   fileName?: string;
+  reportType?: 'product_summary' | 'itemized' | 'receipts' | 'staff_summary';
 }
 
 /**
@@ -87,13 +88,136 @@ export function generateSalesSummaryCsvString({
 }
 
 /**
+ * Generates an aggregated Product Sales Summary CSV string:
+ * Rank | Product Name | Unit of Measurement | Total Quantity Sold | Total Amount | Average Unit Price | Receipts Count | % of Total Sales
+ */
+export function generateProductSalesSummaryCsvString({
+  sales,
+  products = [],
+}: {
+  sales: SaleTransaction[];
+  products?: Product[];
+}): string {
+  const productUnitMap = new Map<string, string>();
+  products.forEach((p) => {
+    if (p.unit) productUnitMap.set(p.id, p.unit);
+  });
+
+  const productMap = new Map<
+    string,
+    {
+      productName: string;
+      unit: string;
+      totalQuantity: number;
+      totalAmount: number;
+      receiptIds: Set<string>;
+    }
+  >();
+
+  let overallRevenue = 0;
+
+  sales.forEach((sale) => {
+    (sale.items || []).forEach((item) => {
+      const key = item.productId || item.productName.trim().toLowerCase();
+      const unit = item.unit || productUnitMap.get(item.productId) || 'Unit';
+      const lineTotal = Number(item.lineTotal !== undefined ? item.lineTotal : item.unitPrice * item.quantity);
+      const qty = Number(item.quantity ?? 0);
+
+      overallRevenue += lineTotal;
+
+      const existing = productMap.get(key);
+      if (existing) {
+        existing.totalQuantity += qty;
+        existing.totalAmount += lineTotal;
+        existing.receiptIds.add(sale.id);
+        if (unit && existing.unit === 'Unit') {
+          existing.unit = unit;
+        }
+      } else {
+        productMap.set(key, {
+          productName: item.productName,
+          unit,
+          totalQuantity: qty,
+          totalAmount: lineTotal,
+          receiptIds: new Set([sale.id]),
+        });
+      }
+    });
+  });
+
+  const rows = Array.from(productMap.values()).map((p) => ({
+    productName: p.productName,
+    unit: p.unit,
+    totalQuantity: p.totalQuantity,
+    totalAmount: p.totalAmount,
+    receiptCount: p.receiptIds.size,
+    avgUnitPrice: p.totalQuantity > 0 ? p.totalAmount / p.totalQuantity : 0,
+    percentageOfSales: overallRevenue > 0 ? (p.totalAmount / overallRevenue) * 100 : 0,
+  }));
+
+  // Sort by highest quantity sold first, then total amount
+  rows.sort((a, b) => {
+    if (b.totalQuantity !== a.totalQuantity) {
+      return b.totalQuantity - a.totalQuantity;
+    }
+    return b.totalAmount - a.totalAmount;
+  });
+
+  const headers = [
+    '#',
+    'Product Name',
+    'Unit of Measurement',
+    'Total Quantity Sold',
+    'Total Amount',
+    'Average Unit Price',
+    'Receipts Count',
+    '% of Total Sales',
+  ];
+
+  let rank = 1;
+  const csvRows = rows.map((r) => [
+    rank++,
+    r.productName,
+    r.unit,
+    r.totalQuantity,
+    r.totalAmount.toFixed(2),
+    r.avgUnitPrice.toFixed(2),
+    r.receiptCount,
+    `${r.percentageOfSales.toFixed(1)}%`,
+  ]);
+
+  const totalQty = rows.reduce((sum, r) => sum + r.totalQuantity, 0);
+  const totalAmt = rows.reduce((sum, r) => sum + r.totalAmount, 0);
+
+  const csvLines = [
+    headers.map(escapeCsvCell).join(','),
+    ...csvRows.map((row) => row.map(escapeCsvCell).join(',')),
+    ['Total', `${rows.length} Products`, '', totalQty, totalAmt.toFixed(2), '', `${sales.length} Receipts`, '100%'].map(escapeCsvCell).join(','),
+  ];
+
+  return '\uFEFF' + csvLines.join('\r\n');
+}
+
+/**
  * Triggers browser download of the Sales Summary CSV file.
  */
 export function downloadSalesSummaryCsv(options: SalesSummaryCsvOptions): void {
-  const csvContent = generateSalesSummaryCsvString({
-    sales: options.sales,
-    products: options.products,
-  });
+  let csvContent = '';
+  if (options.reportType === 'product_summary') {
+    csvContent = generateProductSalesSummaryCsvString({
+      sales: options.sales,
+      products: options.products,
+    });
+  } else if (options.reportType === 'receipts') {
+    csvContent = generateSalesReceiptsCsvString({
+      sales: options.sales,
+    });
+  } else {
+    csvContent = generateSalesSummaryCsvString({
+      sales: options.sales,
+      products: options.products,
+    });
+  }
 
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);

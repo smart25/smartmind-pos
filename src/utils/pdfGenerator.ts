@@ -433,7 +433,7 @@ export interface SalesSummaryPdfOptions {
   products?: Product[];
   fileName?: string;
   generatedBy?: string;
-  reportType?: 'itemized' | 'receipts' | 'staff_summary';
+  reportType?: 'product_summary' | 'itemized' | 'receipts' | 'staff_summary';
   outstandingCreditFallback?: number;
   elementId?: string;
 }
@@ -486,6 +486,238 @@ export async function downloadSalesSummaryPdf({
   products.forEach((p) => {
     if (p.unit) productUnitMap.set(p.id, p.unit);
   });
+
+  if (reportType === 'product_summary') {
+    const report = buildSalesSummaryReportData(sales, {
+      outstandingCreditFallback,
+    });
+
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4',
+    });
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 11;
+    let y = 18;
+
+    const headerX = 73;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.setTextColor(0, 0, 0);
+    doc.text('PRODUCT SALES REPORT', headerX, y);
+    y += 7;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(0, 0, 0);
+    doc.text(dateRangeLabel, headerX, y);
+    y += 5.5;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(30, 41, 59);
+    const bizTitle = `${business.legalName || business.name} (${shop.name})`;
+    const bizLines = doc.splitTextToSize(bizTitle, 80);
+    doc.text(bizLines, headerX, y);
+    y += bizLines.length * 4.8 + 6;
+
+    const leftX = margin;
+    const leftValX = margin + 18;
+    const rightLabelX = 111;
+    const rightValX = pageWidth - margin;
+
+    let leftY = y;
+    let rightY = y;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Payment Method Breakdown', leftX, leftY);
+    leftY += 6.5;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.text('Transfer', leftX, leftY);
+    doc.text(formatPdfCurrency(report.transferTotal, symbol), leftValX, leftY);
+    leftY += 5.2;
+
+    doc.text('Pos', leftX, leftY);
+    doc.text(formatPdfCurrency(report.posTotal, symbol), leftValX, leftY);
+    leftY += 5.2;
+
+    doc.text('Cash', leftX, leftY);
+    doc.text(formatPdfCurrency(report.cashTotal, symbol), leftValX, leftY);
+    leftY += 5.2;
+
+    if (report.splitTotal > 0) {
+      doc.text('Split', leftX, leftY);
+      doc.text(formatPdfCurrency(report.splitTotal, symbol), leftValX, leftY);
+      leftY += 5.2;
+    }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Total Sales', rightLabelX, rightY);
+    doc.text(formatPdfCurrency(report.totalSales, symbol), rightValX, rightY, {
+      align: 'right',
+    });
+    rightY += 5.2;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 58, 138);
+    doc.text('VAT Collected', rightLabelX, rightY);
+    doc.text(formatPdfCurrency(report.vatCollected, symbol), rightValX, rightY, {
+      align: 'right',
+    });
+    rightY += 5.2;
+
+    doc.setTextColor(185, 28, 28);
+    doc.text('Outstanding Credit', rightLabelX, rightY);
+    doc.text(formatPdfCurrency(report.outstandingCredit, symbol), rightValX, rightY, {
+      align: 'right',
+    });
+    rightY += 5.2;
+
+    doc.setTextColor(217, 119, 6);
+    doc.text('Total Refunds', rightLabelX, rightY);
+    doc.text(formatPdfCurrency(report.totalRefunds, symbol), rightValX, rightY, {
+      align: 'right',
+    });
+    rightY += 5.2;
+
+    y = Math.max(leftY, rightY) + 5;
+
+    const productMap = new Map<
+      string,
+      {
+        productName: string;
+        unit: string;
+        totalQuantity: number;
+        totalAmount: number;
+        receiptIds: Set<string>;
+      }
+    >();
+
+    let overallRev = 0;
+    sales.forEach((s) => {
+      (s.items || []).forEach((item) => {
+        const key = item.productId || item.productName.trim().toLowerCase();
+        const unit = item.unit || productUnitMap.get(item.productId) || 'Unit';
+        const lineTotal = item.lineTotal !== undefined ? item.lineTotal : item.unitPrice * item.quantity;
+        const qty = item.quantity || 0;
+        overallRev += lineTotal;
+
+        const existing = productMap.get(key);
+        if (existing) {
+          existing.totalQuantity += qty;
+          existing.totalAmount += lineTotal;
+          existing.receiptIds.add(s.id);
+          if (unit && existing.unit === 'Unit') existing.unit = unit;
+        } else {
+          productMap.set(key, {
+            productName: item.productName,
+            unit,
+            totalQuantity: qty,
+            totalAmount: lineTotal,
+            receiptIds: new Set([s.id]),
+          });
+        }
+      });
+    });
+
+    const prodRows = Array.from(productMap.values()).map((p) => ({
+      productName: p.productName,
+      unit: p.unit,
+      totalQuantity: p.totalQuantity,
+      totalAmount: p.totalAmount,
+      receiptCount: p.receiptIds.size,
+      avgPrice: p.totalQuantity > 0 ? p.totalAmount / p.totalQuantity : 0,
+      pct: overallRev > 0 ? (p.totalAmount / overallRev) * 100 : 0,
+    }));
+
+    prodRows.sort((a, b) => {
+      if (b.totalQuantity !== a.totalQuantity) return b.totalQuantity - a.totalQuantity;
+      return b.totalAmount - a.totalAmount;
+    });
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: margin, right: margin, bottom: 15 },
+      head: [
+        [
+          '#',
+          'Product Name',
+          'Unit of Measurement',
+          'Quantity Sold',
+          'Avg. Unit Price',
+          'Total Amount',
+          'Orders',
+          '% of Sales',
+        ],
+      ],
+      body:
+        prodRows.length > 0
+          ? prodRows.map((r, idx) => [
+              idx + 1,
+              r.productName,
+              r.unit,
+              r.totalQuantity.toLocaleString('en-US'),
+              formatPdfCurrency(r.avgPrice, symbol),
+              formatPdfCurrency(r.totalAmount, symbol),
+              r.receiptCount,
+              `${r.pct.toFixed(1)}%`,
+            ])
+          : [['--', 'No products sold in period', '--', '0', formatPdfCurrency(0, symbol), formatPdfCurrency(0, symbol), '0', '0%']],
+      theme: 'plain',
+      styles: {
+        font: 'helvetica',
+        fontSize: 8.5,
+        cellPadding: { top: 3.2, right: 2, bottom: 3.2, left: 2 },
+        textColor: [15, 23, 42],
+      },
+      headStyles: {
+        fillColor: [154, 168, 184],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+      },
+      alternateRowStyles: {
+        fillColor: [242, 244, 247],
+      },
+      columnStyles: {
+        0: { cellWidth: 10, halign: 'center' },
+        1: { cellWidth: 42, halign: 'left' },
+        2: { cellWidth: 26, halign: 'center' },
+        3: { cellWidth: 22, halign: 'center' },
+        4: { cellWidth: 24, halign: 'right' },
+        5: { cellWidth: 28, halign: 'right' },
+        6: { cellWidth: 16, halign: 'center' },
+        7: { cellWidth: 20, halign: 'right' },
+      },
+      didDrawPage: () => {
+        const totalPages = doc.getNumberOfPages();
+        const footerY = pageHeight - 7;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+        doc.setTextColor(30, 41, 59);
+        doc.text('Powered By SmartMind POS', margin, footerY);
+        doc.text(
+          `Page ${doc.getCurrentPageInfo().pageNumber} of ${totalPages}`,
+          pageWidth - margin,
+          footerY,
+          { align: 'right' }
+        );
+      },
+    });
+
+    const defaultProdFileName =
+      fileName || `Sales_Summary_Products_${safeShopCode}_${safeRange}.pdf`;
+    doc.save(defaultProdFileName);
+    return;
+  }
 
   if (reportType === 'staff_summary') {
     const defaultStaffFileName =

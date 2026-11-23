@@ -15,6 +15,8 @@ import {
   Loader2,
   ListFilter,
   User as UserIcon,
+  ArrowUpDown,
+  Award,
 } from 'lucide-react';
 import {
   Business,
@@ -93,7 +95,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   const [endDate, setEndDate] = useState<string>('');
 
   // Table view toggle, PDF & CSV download state
-  const [salesTableView, setSalesTableView] = useState<'itemized' | 'receipts'>('itemized');
+  const [salesTableView, setSalesTableView] = useState<'product_summary' | 'itemized' | 'receipts'>('product_summary');
+  const [productSortBy, setProductSortBy] = useState<'quantity' | 'amount' | 'name'>('quantity');
+  const [productSortDir, setProductSortDir] = useState<'desc' | 'asc'>('desc');
   const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
   const [downloadSuccess, setDownloadSuccess] = useState<boolean>(false);
   const [isDownloadingCsv, setIsDownloadingCsv] = useState<boolean>(false);
@@ -322,6 +326,100 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
     );
   }, [filteredSales, allProducts]);
 
+  // Compute aggregated product sales summary (Best Selling Products):
+  // Product Name | Unit of Measurement | Total Quantity Sold | Total Amount | Avg. Price | Receipts Count | % of Sales
+  const aggregatedProductRows = useMemo(() => {
+    const productUnitMap = new Map<string, string>();
+    allProducts.forEach((p) => {
+      if (p.unit) productUnitMap.set(p.id, p.unit);
+    });
+
+    const productMap = new Map<
+      string,
+      {
+        productId: string;
+        productName: string;
+        unit: string;
+        totalQuantity: number;
+        totalAmount: number;
+        receiptIds: Set<string>;
+      }
+    >();
+
+    let overallRevenue = 0;
+
+    filteredSales.forEach((sale) => {
+      (sale.items || []).forEach((item) => {
+        const key = item.productId || item.productName.trim().toLowerCase();
+        const unit = item.unit || productUnitMap.get(item.productId) || 'Unit';
+        const lineTotal = Number(item.lineTotal !== undefined ? item.lineTotal : item.unitPrice * item.quantity);
+        const qty = Number(item.quantity ?? 0);
+
+        overallRevenue += lineTotal;
+
+        const existing = productMap.get(key);
+        if (existing) {
+          existing.totalQuantity += qty;
+          existing.totalAmount += lineTotal;
+          existing.receiptIds.add(sale.id);
+          if (unit && existing.unit === 'Unit') {
+            existing.unit = unit;
+          }
+        } else {
+          productMap.set(key, {
+            productId: item.productId,
+            productName: item.productName,
+            unit,
+            totalQuantity: qty,
+            totalAmount: lineTotal,
+            receiptIds: new Set([sale.id]),
+          });
+        }
+      });
+    });
+
+    const rows = Array.from(productMap.values()).map((p) => ({
+      productId: p.productId,
+      productName: p.productName,
+      unit: p.unit,
+      totalQuantity: p.totalQuantity,
+      totalAmount: p.totalAmount,
+      receiptCount: p.receiptIds.size,
+      avgUnitPrice: p.totalQuantity > 0 ? p.totalAmount / p.totalQuantity : 0,
+      percentageOfSales: overallRevenue > 0 ? (p.totalAmount / overallRevenue) * 100 : 0,
+    }));
+
+    rows.sort((a, b) => {
+      if (productSortBy === 'quantity') {
+        return productSortDir === 'desc'
+          ? b.totalQuantity - a.totalQuantity
+          : a.totalQuantity - b.totalQuantity;
+      }
+      if (productSortBy === 'amount') {
+        return productSortDir === 'desc'
+          ? b.totalAmount - a.totalAmount
+          : a.totalAmount - b.totalAmount;
+      }
+      if (productSortBy === 'name') {
+        return productSortDir === 'desc'
+          ? b.productName.localeCompare(a.productName)
+          : a.productName.localeCompare(b.productName);
+      }
+      return b.totalQuantity - a.totalQuantity;
+    });
+
+    return rows;
+  }, [filteredSales, allProducts, productSortBy, productSortDir]);
+
+  const toggleProductSort = (column: 'quantity' | 'amount' | 'name') => {
+    if (productSortBy === column) {
+      setProductSortDir((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setProductSortBy(column);
+      setProductSortDir(column === 'name' ? 'asc' : 'desc');
+    }
+  };
+
   const handleDownloadPdf = async () => {
     if (filteredSales.length === 0 || isDownloadingPdf) return;
     setIsDownloadingPdf(true);
@@ -334,6 +432,12 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
         symbol,
         products: allProducts,
         generatedBy: currentUser.fullName,
+        reportType:
+          salesTableView === 'product_summary'
+            ? 'product_summary'
+            : salesTableView === 'receipts'
+            ? 'receipts'
+            : 'itemized',
       });
       setDownloadSuccess(true);
       setTimeout(() => setDownloadSuccess(false), 3000);
@@ -355,6 +459,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
         dateRangeLabel: activeFilterSummaryLabel,
         symbol,
         products: allProducts,
+        reportType: salesTableView,
       });
       setCsvSuccess(true);
       setTimeout(() => setCsvSuccess(false), 3000);
@@ -765,7 +870,11 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Showing {itemizedSalesRows.length} item{itemizedSalesRows.length === 1 ? '' : 's'} ({salesMetrics.unitsSold} unit{salesMetrics.unitsSold === 1 ? '' : 's'}) across {filteredSales.length} receipt{filteredSales.length === 1 ? '' : 's'}
+                  {salesTableView === 'product_summary'
+                    ? `Showing ${aggregatedProductRows.length} unique product${aggregatedProductRows.length === 1 ? '' : 's'} (${salesMetrics.unitsSold} total units sold) across ${filteredSales.length} receipt${filteredSales.length === 1 ? '' : 's'}`
+                    : salesTableView === 'itemized'
+                    ? `Showing ${itemizedSalesRows.length} item line${itemizedSalesRows.length === 1 ? '' : 's'} (${salesMetrics.unitsSold} unit${salesMetrics.unitsSold === 1 ? '' : 's'}) across ${filteredSales.length} receipt${filteredSales.length === 1 ? '' : 's'}`
+                    : `Showing ${filteredSales.length} receipt${filteredSales.length === 1 ? '' : 's'} (${salesMetrics.unitsSold} total units)`}
                   {selectedUserObj ? ` sold by ${selectedUserObj.fullName}` : ''}
                 </p>
               </div>
@@ -775,6 +884,18 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                 <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-medium">
                   <button
                     type="button"
+                    onClick={() => setSalesTableView('product_summary')}
+                    className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer inline-flex items-center gap-1.5 ${
+                      salesTableView === 'product_summary'
+                        ? 'bg-slate-900 text-white font-semibold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Best Selling Products</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setSalesTableView('itemized')}
                     className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
                       salesTableView === 'itemized'
@@ -782,7 +903,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    Itemized Products
+                    Itemized Sales Log
                   </button>
                   <button
                     type="button"
@@ -881,6 +1002,150 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>Reset User &amp; Date Filters</span>
                 </button>
+              </div>
+            ) : salesTableView === 'product_summary' ? (
+              /* BEST SELLING PRODUCTS CONSOLIDATED TABLE */
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-semibold">
+                      <th className="py-3 px-3 text-center w-12 font-bold text-slate-500">#</th>
+                      <th className="py-3 px-4 font-semibold text-slate-900">
+                        <button
+                          type="button"
+                          onClick={() => toggleProductSort('name')}
+                          className="inline-flex items-center gap-1.5 hover:text-emerald-700 cursor-pointer group"
+                        >
+                          <span>Product Name</span>
+                          <ArrowUpDown className={`w-3.5 h-3.5 transition-colors ${productSortBy === 'name' ? 'text-emerald-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
+                        </button>
+                      </th>
+                      <th className="py-3 px-4 font-semibold text-slate-700 text-center whitespace-nowrap">
+                        Unit of Measurement
+                      </th>
+                      <th className="py-3 px-4 font-semibold text-slate-700 text-center whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => toggleProductSort('quantity')}
+                          className="inline-flex items-center gap-1.5 hover:text-emerald-700 cursor-pointer group"
+                        >
+                          <span>Total Quantity Sold</span>
+                          <ArrowUpDown className={`w-3.5 h-3.5 transition-colors ${productSortBy === 'quantity' ? 'text-emerald-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
+                        </button>
+                      </th>
+                      <th className="py-3 px-4 font-semibold text-slate-900 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => toggleProductSort('amount')}
+                          className="inline-flex items-center gap-1.5 hover:text-emerald-700 cursor-pointer group ml-auto"
+                        >
+                          <span>Total Amount</span>
+                          <ArrowUpDown className={`w-3.5 h-3.5 transition-colors ${productSortBy === 'amount' ? 'text-emerald-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
+                        </button>
+                      </th>
+                      <th className="py-3 px-4 font-semibold text-slate-700 text-right whitespace-nowrap">
+                        Avg. Unit Price
+                      </th>
+                      <th className="py-3 px-4 font-semibold text-slate-700 text-center whitespace-nowrap">
+                        Orders
+                      </th>
+                      <th className="py-3 px-4 font-semibold text-slate-700 text-right whitespace-nowrap">
+                        % of Sales
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {aggregatedProductRows.map((row, idx) => (
+                      <tr key={row.productId || row.productName} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-3 text-center">
+                          {idx === 0 && productSortBy === 'quantity' && productSortDir === 'desc' ? (
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-100 text-amber-700 font-bold text-[11px] shadow-xs" title="#1 Top Selling Product">
+                              🥇
+                            </span>
+                          ) : idx === 1 && productSortBy === 'quantity' && productSortDir === 'desc' ? (
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold text-[11px]" title="#2 Top Seller">
+                              🥈
+                            </span>
+                          ) : idx === 2 && productSortBy === 'quantity' && productSortDir === 'desc' ? (
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-orange-100 text-orange-800 font-bold text-[11px]" title="#3 Top Seller">
+                              🥉
+                            </span>
+                          ) : (
+                            <span className="font-mono font-medium text-slate-400">
+                              {idx + 1}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <p className="font-semibold text-slate-900 text-sm">{row.productName}</p>
+                          <p className="text-[10px] text-slate-400">
+                            Sold in {row.receiptCount} receipt{row.receiptCount === 1 ? '' : 's'}
+                          </p>
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            {row.unit}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono font-bold text-slate-900 text-sm">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            {row.totalQuantity.toLocaleString()} {row.unit}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 font-mono font-bold tabular-nums text-right text-slate-900 whitespace-nowrap text-sm">
+                          {formatCurrency(row.totalAmount, symbol)}
+                        </td>
+                        <td className="py-3 px-4 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap">
+                          {formatCurrency(row.avgUnitPrice, symbol)}
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono text-slate-600">
+                          {row.receiptCount}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <span className="font-mono text-slate-700 font-medium">
+                              {row.percentageOfSales.toFixed(1)}%
+                            </span>
+                            <div className="w-12 h-1.5 rounded-full bg-slate-100 overflow-hidden shrink-0">
+                              <div
+                                className="h-full bg-emerald-500 rounded-full"
+                                style={{ width: `${Math.min(100, Math.max(4, row.percentageOfSales))}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50/90 font-bold border-t-2 border-slate-200 text-slate-900">
+                      <td className="py-3 px-3 text-center font-mono text-xs">Total</td>
+                      <td className="py-3 px-4">
+                        <span className="text-slate-700 font-semibold text-xs">
+                          {aggregatedProductRows.length} unique product{aggregatedProductRows.length === 1 ? '' : 's'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center text-slate-400 font-normal">—</td>
+                      <td className="py-3 px-4 text-center font-mono text-xs text-slate-900">
+                        <span className="px-2.5 py-1 rounded bg-slate-200 text-slate-900 font-bold">
+                          {aggregatedProductRows.reduce((sum, r) => sum + r.totalQuantity, 0).toLocaleString()} units
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-right text-xs text-emerald-700">
+                        {formatCurrency(salesMetrics.total, symbol)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-slate-500 font-normal">
+                        —
+                      </td>
+                      <td className="py-3 px-4 text-center font-mono text-slate-600">
+                        {filteredSales.length} receipts
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-emerald-700">
+                        100.0%
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             ) : salesTableView === 'itemized' ? (
               /* EXACT TABLE HEAD AS SPECIFIED IN USER IMAGE WITH 'Unit of Measurement' */
