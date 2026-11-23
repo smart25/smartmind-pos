@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect } from 'react';
+﻿import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Building2,
   Plus,
@@ -36,6 +36,7 @@ import {
   AlertTriangle,
   ShieldAlert,
   CreditCard,
+  ChevronLeft,
   ChevronRight,
   ChevronDown,
   Check,
@@ -339,6 +340,35 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
       });
     } finally {
       setClaimsActionLoading(false);
+    }
+  };
+
+  // Tab Navigation Scroll Controls
+  const tabsContainerRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState<boolean>(false);
+  const [canScrollRight, setCanScrollRight] = useState<boolean>(false);
+
+  const checkTabScroll = () => {
+    const el = tabsContainerRef.current;
+    if (el) {
+      setCanScrollLeft(el.scrollLeft > 6);
+      setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 6);
+    }
+  };
+
+  useEffect(() => {
+    checkTabScroll();
+    window.addEventListener('resize', checkTabScroll);
+    return () => window.removeEventListener('resize', checkTabScroll);
+  }, [businesses.length, shops.length]);
+
+  const handleScrollTabs = (direction: 'left' | 'right') => {
+    if (tabsContainerRef.current) {
+      tabsContainerRef.current.scrollBy({
+        left: direction === 'left' ? -260 : 260,
+        behavior: 'smooth',
+      });
+      setTimeout(checkTabScroll, 320);
     }
   };
 
@@ -1647,36 +1677,67 @@ if (!deleteResult) {
         </div>
 
         {/* 10 Navigation Section Tabs Bar */}
-        <div className="border-t border-slate-800/80 bg-slate-950/60 overflow-x-auto scrollbar-none">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-1 py-1.5">
-            {navigationTabs.map((tab) => {
-              const Icon = tab.icon;
-              const isActive = activeSection === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveSection(tab.id as PlatformAdminSection)}
-                  className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
-                    isActive
-                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/70'
-                  }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  <span>{tab.label}</span>
-                  {tab.id === 'businesses' && (
-                    <span className="ml-1 px-1.5 py-0.2 text-[10px] rounded-full bg-slate-800 text-slate-300">
-                      {businesses.length}
-                    </span>
-                  )}
-                  {tab.id === 'shops' && (
-                    <span className="ml-1 px-1.5 py-0.2 text-[10px] rounded-full bg-slate-800 text-slate-300">
-                      {shops.length}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+        <div className="border-t border-slate-800/80 bg-slate-950/60 relative">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center gap-1.5 py-1.5">
+            {canScrollLeft && (
+              <button
+                type="button"
+                onClick={() => handleScrollTabs('left')}
+                className="shrink-0 p-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition cursor-pointer shadow-sm"
+                title="Scroll navigation tabs left"
+                aria-label="Scroll left"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            )}
+
+            <div
+              ref={tabsContainerRef}
+              onScroll={checkTabScroll}
+              className="flex-1 flex space-x-1 overflow-x-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900/40 py-0.5"
+            >
+              {navigationTabs.map((tab) => {
+                const Icon = tab.icon;
+                const isActive = activeSection === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveSection(tab.id as PlatformAdminSection)}
+                    className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                      isActive
+                        ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-semibold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/70'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span>{tab.label}</span>
+                    {tab.id === 'businesses' && (
+                      <span className="ml-1 px-1.5 py-0.2 text-[10px] rounded-full bg-slate-800 text-slate-300">
+                        {businesses.length}
+                      </span>
+                    )}
+                    {tab.id === 'shops' && (
+                      <span className="ml-1 px-1.5 py-0.2 text-[10px] rounded-full bg-slate-800 text-slate-300">
+                        {shops.length}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {canScrollRight && (
+              <button
+                type="button"
+                onClick={() => handleScrollTabs('right')}
+                className="shrink-0 flex items-center space-x-1 px-2 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/40 transition cursor-pointer shadow-md shadow-indigo-900/50"
+                title="Scroll to see Platform Settings and other tabs"
+                aria-label="Scroll right"
+              >
+                <span className="text-[11px] font-medium hidden sm:inline">More</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
       </header>
