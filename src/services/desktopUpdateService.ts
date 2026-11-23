@@ -55,9 +55,11 @@ export function setUpdateStore(partial: Partial<UpdateStore>) {
  * Checks for updates on GitHub Releases and Electron native updater
  */
 export async function checkForAppUpdates(): Promise<void> {
-  setUpdateStore({ state: 'checking', errorMessage: null });
-
   const desktopApi = typeof window !== 'undefined' ? window.smartmindDesktopApi : undefined;
+  if (!desktopApi?.isElectron) {
+    return;
+  }
+  setUpdateStore({ state: 'checking', errorMessage: null });
 
   // 1. If running inside Electron, trigger electron-updater IPC
   if (desktopApi?.checkForUpdates) {
@@ -133,11 +135,8 @@ export function initDesktopUpdateService() {
   isInitialized = true;
 
   const desktopApi = window.smartmindDesktopApi;
-  if (!desktopApi) {
-    // Check GitHub releases on web startup after 2 seconds
-    setTimeout(() => {
-      checkForAppUpdates();
-    }, 2000);
+  if (!desktopApi?.isElectron) {
+    // Only running inside Electron desktop application; ignore in web browser and mobile
     return;
   }
 

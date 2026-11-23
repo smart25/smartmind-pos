@@ -4,6 +4,11 @@ import { APP_VERSION } from '../../constants/version';
 import { useDesktopUpdate } from '../../services/desktopUpdateService';
 
 export const AppUpdateNotificationModal: React.FC = () => {
+  // Never render desktop app update modals in web browsers or mobile devices
+  if (typeof window === 'undefined' || !window.smartmindDesktopApi?.isElectron) {
+    return null;
+  }
+
   const {
     state,
     latestVersion,
