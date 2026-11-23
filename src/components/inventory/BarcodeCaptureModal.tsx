@@ -16,6 +16,53 @@ interface BarcodeCaptureModalProps {
   onBarcodeCaptured: (barcode: string) => void;
   currentBarcode?: string;
   productName?: string;
+  initialTab?: 'gun' | 'camera';
+  title?: string;
+  subtitle?: string;
+  continuous?: boolean;
+}
+
+/**
+ * Synthesizes POS audio feedback using Web Audio API:
+ * - 'success': crisp high-frequency chirp (1760 Hz, A6)
+ * - 'error': double low buzz (320 Hz -> 240 Hz)
+ */
+export function playPosBeep(type: 'success' | 'error' = 'success') {
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+
+    if (type === 'success') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1760, ctx.currentTime);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    } else {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(320, ctx.currentTime);
+      osc.frequency.setValueAtTime(240, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.25);
+    }
+  } catch {
+    // AudioContext not allowed or unsupported
+  }
 }
 
 export const BarcodeCaptureModal: React.FC<BarcodeCaptureModalProps> = ({
@@ -24,8 +71,12 @@ export const BarcodeCaptureModal: React.FC<BarcodeCaptureModalProps> = ({
   onBarcodeCaptured,
   currentBarcode = '',
   productName,
+  initialTab = 'gun',
+  title,
+  subtitle,
+  continuous = false,
 }) => {
-  const [activeTab, setActiveTab] = useState<'gun' | 'camera'>('gun');
+  const [activeTab, setActiveTab] = useState<'gun' | 'camera'>(initialTab);
   const [scannedValue, setScannedValue] = useState<string>('');
   const [manualInput, setManualInput] = useState<string>(currentBarcode);
   const [cameraActive, setCameraActive] = useState<boolean>(false);
@@ -37,38 +88,36 @@ export const BarcodeCaptureModal: React.FC<BarcodeCaptureModalProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  // Play synthetic scan beep using Web Audio API
-  const playScanBeep = () => {
-    try {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(1760, ctx.currentTime); // High crisp beep (A6)
-      gain.gain.setValueAtTime(0.25, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.12);
-    } catch {
-      // AudioContext not allowed or unsupported
+  // Sync initial tab when modal opens
+  useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
     }
-  };
+  }, [isOpen, initialTab]);
 
   const handleCaptureComplete = (code: string) => {
     const cleanCode = code.trim();
     if (!cleanCode) return;
 
-    playScanBeep();
+    playPosBeep('success');
     setScannedValue(cleanCode);
     setJustScanned(true);
+    onBarcodeCaptured(cleanCode);
 
-    setTimeout(() => {
-      onBarcodeCaptured(cleanCode);
-      onClose();
-    }, 450);
+    if (continuous) {
+      // Keep scanner alive for rapid successive items
+      setTimeout(() => {
+        setJustScanned(false);
+        setScannedValue('');
+        if (activeTab === 'camera') {
+          startBarcodeDetection();
+        }
+      }, 1200);
+    } else {
+      setTimeout(() => {
+        onClose();
+      }, 450);
+    }
   };
 
   // Automatically focus gun input on open and keep it focused in Gun mode
@@ -208,10 +257,13 @@ export const BarcodeCaptureModal: React.FC<BarcodeCaptureModalProps> = ({
             </div>
             <div>
               <h3 id="barcode-capture-modal-title" className="text-base font-display font-bold">
-                Scan Product Barcode
+                {title || 'Scan Product Barcode'}
               </h3>
               <p className="text-xs text-slate-300">
-                {productName ? `Scanning for: ${productName}` : 'Position item to scan manufacturer barcode'}
+                {subtitle ||
+                  (productName
+                    ? `Scanning for: ${productName}`
+                    : 'Position item to scan manufacturer barcode')}
               </p>
             </div>
           </div>
@@ -224,6 +276,16 @@ export const BarcodeCaptureModal: React.FC<BarcodeCaptureModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {continuous && (
+          <div className="bg-emerald-950/40 border-b border-emerald-800/40 px-5 py-2 text-[11px] text-emerald-200 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+              Continuous Scan Mode: Items are added to the cart instantly on detection.
+            </span>
+            <span className="font-semibold text-emerald-400">Keep scanning</span>
+          </div>
+        )}
 
         {/* Tab Selection: Scanner Gun vs Camera */}
         <div className="flex border-b border-slate-200 bg-slate-50 px-5 pt-3 gap-2">
@@ -392,9 +454,13 @@ export const BarcodeCaptureModal: React.FC<BarcodeCaptureModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="px-3.5 py-1.5 rounded-lg border border-slate-300 font-semibold text-slate-700 hover:bg-white cursor-pointer"
+            className={`px-4 py-1.5 rounded-lg font-semibold cursor-pointer transition-colors ${
+              continuous
+                ? 'bg-slate-900 hover:bg-slate-800 text-white'
+                : 'border border-slate-300 text-slate-700 hover:bg-white'
+            }`}
           >
-            Cancel
+            {continuous ? 'Done Scanning' : 'Cancel'}
           </button>
         </div>
       </div>

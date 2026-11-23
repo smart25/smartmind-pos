@@ -37,6 +37,8 @@ import {
   isSyntheticOwnerUserId,
   resolveBusinessOwnerAuthState,
   validateProductInput,
+  findProductByBarcodeOrSku,
+  normalizeBarcodeString,
 } from './posCalculations';
 import {
   User,
@@ -1832,4 +1834,123 @@ test('validateProductInput accurately validates product creation, duplicate SKU/
   );
   assert.equal(validExpiring.valid, true);
 });
+
+test('findProductByBarcodeOrSku and normalizeBarcodeString robustly match barcodes, SKUs, and scanner formats', () => {
+  const shopA = 'shop-01';
+  const shopB = 'shop-02';
+  const businessId = 'biz-01';
+
+  const testProducts: Product[] = [
+    {
+      id: 'prod-01',
+      businessId,
+      shopId: shopA,
+      name: 'Coca Cola 50cl Pet',
+      sku: 'COKE-50CL',
+      barcode: '613000492811',
+      categoryId: 'cat-drinks',
+      categoryName: 'Drinks',
+      unit: 'bottle',
+      costPrice: 200,
+      sellingPrice: 350,
+      stockQuantity: 50,
+      reorderLevel: 10,
+      isActive: true,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'prod-02',
+      businessId,
+      shopId: shopA,
+      name: 'Indomie Super Pack 120g',
+      sku: 'SKU-IND-120',
+      barcode: '08901030384732', // EAN-13 / 14 with leading zero
+      categoryId: 'cat-groceries',
+      categoryName: 'Groceries',
+      unit: 'pack',
+      costPrice: 150,
+      sellingPrice: 250,
+      stockQuantity: 100,
+      reorderLevel: 20,
+      isActive: true,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'prod-03',
+      businessId,
+      shopId: shopA,
+      name: 'Discontinued Snack',
+      sku: 'SKU-DISC-01',
+      barcode: '999999999999',
+      categoryId: 'cat-groceries',
+      categoryName: 'Groceries',
+      unit: 'pack',
+      costPrice: 100,
+      sellingPrice: 200,
+      stockQuantity: 10,
+      reorderLevel: 2,
+      isActive: false, // Inactive!
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'prod-04',
+      businessId,
+      shopId: shopB, // Different shop!
+      name: 'Shop B Only Maltina',
+      sku: 'MALT-B',
+      barcode: '613000492811',
+      categoryId: 'cat-drinks',
+      categoryName: 'Drinks',
+      unit: 'can',
+      costPrice: 250,
+      sellingPrice: 400,
+      stockQuantity: 20,
+      reorderLevel: 5,
+      isActive: true,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+  ];
+
+  // 1. Exact barcode match
+  const match1 = findProductByBarcodeOrSku(testProducts, shopA, businessId, '613000492811');
+  assert.equal(match1?.id, 'prod-01');
+
+  // 2. Exact SKU match (case-insensitive)
+  const match2 = findProductByBarcodeOrSku(testProducts, shopA, businessId, 'coke-50cl');
+  assert.equal(match2?.id, 'prod-01');
+
+  // 3. EAN-13 scanner adding leading zero to 12-digit UPC ("0613000492811" -> matches "613000492811")
+  const match3 = findProductByBarcodeOrSku(testProducts, shopA, businessId, '0613000492811');
+  assert.equal(match3?.id, 'prod-01');
+
+  // 4. Scanner stripping leading zero from stored barcode ("8901030384732" -> matches "08901030384732")
+  const match4 = findProductByBarcodeOrSku(testProducts, shopA, businessId, '8901030384732');
+  assert.equal(match4?.id, 'prod-02');
+
+  // 5. Hardware scanner gun emitting control characters (\x02 STX and \r\n carriage return)
+  const match5 = findProductByBarcodeOrSku(testProducts, shopA, businessId, '\x02613000492811\r\n');
+  assert.equal(match5?.id, 'prod-01');
+
+  // 6. Excel-exported trailing float decimal ("613000492811.0" or "613000492811.00")
+  const match6 = findProductByBarcodeOrSku(testProducts, shopA, businessId, '613000492811.0');
+  assert.equal(match6?.id, 'prod-01');
+
+  // 7. Inactive product is rejected
+  const matchInactive = findProductByBarcodeOrSku(testProducts, shopA, businessId, '999999999999');
+  assert.equal(matchInactive, undefined);
+
+  // 8. Product from another shop is isolated
+  const matchShopB = findProductByBarcodeOrSku(testProducts, shopA, businessId, 'MALT-B');
+  assert.equal(matchShopB, undefined);
+
+  // 9. Blank or non-existent code
+  assert.equal(findProductByBarcodeOrSku(testProducts, shopA, businessId, ''), undefined);
+  assert.equal(findProductByBarcodeOrSku(testProducts, shopA, businessId, '   '), undefined);
+  assert.equal(findProductByBarcodeOrSku(testProducts, shopA, businessId, 'UNKNOWN-999'), undefined);
+});
+
 

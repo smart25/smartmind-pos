@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Search,
   Barcode,
+  Camera,
+  Scan,
   Plus,
   Minus,
   Trash2,
@@ -69,6 +71,10 @@ import {
   resolveEffectivePrinter,
   printSaleReceipt,
 } from '../utils/receiptPrinter';
+import {
+  BarcodeCaptureModal,
+  playPosBeep,
+} from '../components/inventory/BarcodeCaptureModal';
 
 interface PosPageProps {
   business: Business;
@@ -336,6 +342,13 @@ export const PosPage: React.FC<PosPageProps> = ({
     'Customer return with receipt at POS counter'
   );
   const [posReturnBanner, setPosReturnBanner] = useState<string | null>(null);
+
+  // Camera Barcode Scanner Modal State
+  const [cameraScannerOpen, setCameraScannerOpen] = useState<boolean>(false);
+
+  // Hardware Barcode Scanner Gun Buffer & Timestamps
+  const scannerBufferRef = useRef<string>('');
+  const lastKeyTimeRef = useRef<number>(0);
 
   // Guarantee activeTab always resolves to a valid tab
   const activeTab =
@@ -781,21 +794,22 @@ export const PosPage: React.FC<PosPageProps> = ({
     });
   };
 
-  const handleBarcodeSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!barcodeInput.trim()) return;
+  const processScannedBarcode = (rawCode: string) => {
+    const cleanCode = rawCode.trim();
+    if (!cleanCode) return;
 
     const matched = findProductByBarcodeOrSku(
       shopProducts,
       shop.id,
       business.id,
-      barcodeInput
+      cleanCode
     );
 
     if (!matched) {
+      playPosBeep('error');
       setBarcodeFeedback({
         type: 'error',
-        message: `No product with barcode or SKU "${barcodeInput.trim()}" found in ${shop.code}.`,
+        message: `No product matching barcode or SKU "${cleanCode}" found in ${shop.code}. Please ensure the item is active in Inventory.`,
       });
       return;
     }
@@ -804,6 +818,7 @@ export const PosPage: React.FC<PosPageProps> = ({
     const availableStock = matched.stockQuantity - heldElsewhere;
 
     if (availableStock <= 0) {
+      playPosBeep('error');
       setBarcodeFeedback({
         type: 'error',
         message: `"${matched.name}" has no remaining available stock (${heldElsewhere} held in another open tab).`,
@@ -812,12 +827,114 @@ export const PosPage: React.FC<PosPageProps> = ({
     }
 
     handleAddToCart(matched);
+    playPosBeep('success');
     setBarcodeFeedback({
       type: 'success',
-      message: `Added 1x ${matched.name} (${matched.sku}) to ${activeTab.label}.`,
+      message: `Scanned & Added 1x ${matched.name} (${matched.sku}) to ${activeTab.label}.`,
     });
     setBarcodeInput('');
   };
+
+  const handleBarcodeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!barcodeInput.trim()) return;
+    processScannedBarcode(barcodeInput);
+  };
+
+  // Global hardware barcode scanner gun listener (USB / Bluetooth HID keyboard emulation)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // If payment modal or dialog is open, do not intercept
+      if (
+        activePaymentModal ||
+        showAddCustomerModal ||
+        posReturnModalOpen ||
+        cameraScannerOpen ||
+        completedReceipt
+      ) {
+        return;
+      }
+
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+
+      // If user is focused in the dedicated barcode input, form onSubmit handles Enter
+      if (target?.id === 'pos-barcode-input') {
+        return;
+      }
+
+      // Handle Enter keypress from scanner gun
+      if (e.key === 'Enter') {
+        // If cursor was in product search box and scanner pressed Enter
+        if (target?.id === 'pos-product-search') {
+          const query = searchQuery.trim();
+          if (query.length >= 3) {
+            const matched = findProductByBarcodeOrSku(
+              shopProducts,
+              shop.id,
+              business.id,
+              query
+            );
+            if (matched) {
+              e.preventDefault();
+              e.stopPropagation();
+              setSearchQuery('');
+              processScannedBarcode(query);
+              return;
+            }
+          }
+        }
+
+        // Buffer accumulated from scanner gun while cursor was outside text fields
+        const buffer = scannerBufferRef.current.trim();
+        scannerBufferRef.current = '';
+        if (buffer.length >= 3) {
+          e.preventDefault();
+          e.stopPropagation();
+          processScannedBarcode(buffer);
+          return;
+        }
+      }
+
+      // If inside an input (like search, customer name, notes) and not an Enter key, allow normal typing
+      if (isInput) {
+        return;
+      }
+
+      // Reset buffer if delay between keystrokes exceeds 140ms (typical human typing cadence)
+      const now = Date.now();
+      if (now - lastKeyTimeRef.current > 140) {
+        scannerBufferRef.current = '';
+      }
+      lastKeyTimeRef.current = now;
+
+      // Accumulate single printable characters
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        scannerBufferRef.current += e.key;
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown, true);
+    };
+  }, [
+    activePaymentModal,
+    showAddCustomerModal,
+    posReturnModalOpen,
+    cameraScannerOpen,
+    completedReceipt,
+    searchQuery,
+    shopProducts,
+    shop.id,
+    business.id,
+    activeTab.label,
+    reservedInOtherTabs,
+  ]);
 
   const openPaymentConfirmation = (method: PaymentMethod) => {
     if (cart.length === 0) return;
@@ -1539,6 +1656,16 @@ export const PosPage: React.FC<PosPageProps> = ({
                 >
                   Scan Add
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setCameraScannerOpen(true)}
+                  title="Open Camera Scanner (Mobile / Laptop Webcam)"
+                  aria-label="Open Camera Barcode Scanner"
+                  className="px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Camera</span>
+                </button>
               </form>
             </div>
 
@@ -1551,11 +1678,7 @@ export const PosPage: React.FC<PosPageProps> = ({
                     key={prod.id}
                     type="button"
                     onClick={() => {
-                      handleAddToCart(prod);
-                      setBarcodeFeedback({
-                        type: 'success',
-                        message: `Scanned ${prod.barcode} → Added 1x ${prod.name} to ${activeTab.label}`,
-                      });
+                      processScannedBarcode(prod.barcode);
                     }}
                     className="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 hover:text-emerald-800 text-slate-700 transition-colors cursor-pointer"
                   >
@@ -2938,6 +3061,21 @@ export const PosPage: React.FC<PosPageProps> = ({
       })()}
       {/* POS Return Modal */}
       {posReturnModalOpen && renderPosReturnModal()}
+
+      {/* POS Barcode Camera & Hardware Scanner Modal */}
+      {cameraScannerOpen && (
+        <BarcodeCaptureModal
+          isOpen={cameraScannerOpen}
+          onClose={() => setCameraScannerOpen(false)}
+          onBarcodeCaptured={(code) => {
+            processScannedBarcode(code);
+          }}
+          initialTab="camera"
+          continuous={true}
+          title={`POS Barcode Scanner (${activeTab.label})`}
+          subtitle="Point camera at product barcode or connect scanner gun to add items directly to cart"
+        />
+      )}
 
     </div>
   );

@@ -1270,7 +1270,24 @@ export function filterShopProducts(
 }
 
 /**
- * Finds an active product by exact barcode or SKU within a specific shop.
+ * Normalizes barcode or SKU string by removing non-printable ASCII control characters,
+ * stripping Excel decimals (.0, .00), trimming, and converting to lowercase.
+ */
+export function normalizeBarcodeString(code: string | undefined | null): string {
+  if (!code) return '';
+  // Remove control characters (e.g. STX \x02, ETX \x03, CR \r, LF \n, etc.)
+  let cleaned = String(code).replace(/[\x00-\x1F\x7F]/g, '').trim().toLowerCase();
+  // Strip Excel-exported trailing float notation if present (e.g. "613000492811.0" -> "613000492811")
+  if (/^\d+\.0+$/.test(cleaned)) {
+    cleaned = cleaned.split('.')[0];
+  }
+  return cleaned;
+}
+
+/**
+ * Finds an active product by exact or normalized barcode or SKU within a specific shop.
+ * Robust against UPC-A (12-digit) vs EAN-13 (13-digit with leading zero), control characters,
+ * Excel float decimals, and case/whitespace differences.
  */
 export function findProductByBarcodeOrSku(
   products: Product[],
@@ -1278,16 +1295,35 @@ export function findProductByBarcodeOrSku(
   businessId: string,
   code: string
 ): Product | undefined {
-  const normalized = code.trim().toLowerCase();
+  const normalized = normalizeBarcodeString(code);
   if (!normalized) return undefined;
 
-  return products.find(
-    (p) =>
-      p.shopId === shopId &&
-      p.businessId === businessId &&
-      p.isActive &&
-      (p.barcode.toLowerCase() === normalized || p.sku.toLowerCase() === normalized)
-  );
+  const noLeadingZero = normalized.replace(/^0+/, '');
+
+  return products.find((p) => {
+    if (p.shopId !== shopId || p.businessId !== businessId || !p.isActive) {
+      return false;
+    }
+
+    const pBarcode = normalizeBarcodeString(p.barcode);
+    const pSku = normalizeBarcodeString(p.sku);
+
+    // 1. Direct match on barcode or SKU
+    if (pBarcode === normalized || pSku === normalized) {
+      return true;
+    }
+
+    // 2. Barcode without leading zero match (UPC-A <-> EAN-13 scanner compatibility)
+    // Only apply if the code is numeric/alphanumeric and length >= 3 to avoid matching empty or single zero
+    if (noLeadingZero.length >= 3) {
+      const pBarcodeNoZero = pBarcode.replace(/^0+/, '');
+      if (pBarcodeNoZero && pBarcodeNoZero === noLeadingZero) {
+        return true;
+      }
+    }
+
+    return false;
+  });
 }
 
 /**
