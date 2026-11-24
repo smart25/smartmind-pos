@@ -5258,6 +5258,10 @@ export class LiveFirestoreDataService {
     await this.cloudProvider.saveUserProfile(user);
   }
 
+  async saveUserProfile(user: User): Promise<void> {
+    await this.cloudProvider.saveUserProfile(user);
+  }
+
   async persistLiveProduct(
     product: Product,
     options?: { operationType?: 'create' | 'update'; supportSessionId?: string }

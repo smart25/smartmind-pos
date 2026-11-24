@@ -1011,6 +1011,7 @@ export interface CreateStaffInput {
   customRoleId?: string;
   assignedShopIds: string[];
   permissions: PermissionKey[];
+  staffUid?: string;
 }
 
 export const OWNER_ONLY_STAFF_PERMISSIONS = new Set<string>([]);

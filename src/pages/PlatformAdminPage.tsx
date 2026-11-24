@@ -216,7 +216,9 @@ export interface PlatformAdminPageProps {
     assignedShopIds: string[];
     permissions: PermissionKey[];
     reason?: string;
+    firebaseUid?: string;
   }) => Promise<User> | User;
+  onLinkUserFirebaseUid?: (user: User, newUid: string, reason: string) => Promise<void>;
   onSwitchDemoUser: (userId: string) => void;
   onSignOut: () => void;
   onCreateCustomRole?: (input: CreateCustomRoleInput) => CustomRole;
@@ -261,6 +263,7 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
   onToggleUserStatus,
   onUpdateUserRoleAndShops,
   onCreateUser,
+  onLinkUserFirebaseUid,
   onCreateShop,
   onUpdateShop,
   onUpdateSubscription,
@@ -640,6 +643,7 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
     fullName: string;
     email: string;
     password?: string;
+    firebaseUid?: string;
     role: UserRole;
     roleLabel: string;
     assignedShopIds: string[];
@@ -649,6 +653,7 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
     fullName: '',
     email: '',
     password: '',
+    firebaseUid: '',
     role: 'shop_manager',
     roleLabel: 'Shop Manager',
     assignedShopIds: [],
@@ -662,6 +667,12 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
     ],
     reason: '',
   });
+
+  // 5c. Link Firebase Auth UID Modal
+  const [linkUidModalUser, setLinkUidModalUser] = useState<User | null>(null);
+  const [linkUidVal, setLinkUidVal] = useState<string>('');
+  const [linkUidReason, setLinkUidReason] = useState<string>('');
+  const [linkUidBusy, setLinkUidBusy] = useState<boolean>(false);
 
   // 6. Manage Subscription Modal
   const [subscriptionModalOpen, setSubscriptionModalOpen] = useState(false);
@@ -3066,6 +3077,7 @@ if (!deleteResult) {
                         fullName: '',
                         email: '',
                         password: '',
+                        firebaseUid: '',
                         role: 'shop_manager',
                         roleLabel: 'Shop Manager',
                         assignedShopIds: workspaceShops[0]?.id ? [workspaceShops[0].id] : [],
@@ -3160,6 +3172,19 @@ if (!deleteResult) {
                                 className="px-2 py-1 text-xs rounded bg-indigo-950/70 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/50"
                               >
                                 Set Password
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLinkUidModalUser(u);
+                                  setLinkUidVal('');
+                                  setLinkUidReason(
+                                    `Link Firebase Auth UID for ${u.fullName || u.email}`
+                                  );
+                                }}
+                                className="px-2 py-1 text-xs rounded bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/50 cursor-pointer"
+                              >
+                                Link UID
                               </button>
                               <button
                                 onClick={() => {
@@ -5834,6 +5859,27 @@ if (!deleteResult) {
                 </p>
               </div>
 
+              <div>
+                <label className="text-slate-300 font-medium block mb-1">
+                  Firebase Auth UID (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={createUserForm.firebaseUid || ''}
+                  onChange={(e) =>
+                    setCreateUserForm((prev) => ({
+                      ...prev,
+                      firebaseUid: e.target.value,
+                    }))
+                  }
+                  placeholder="e.g. 8JbTcgrEUOcAo9CdirSYzwMpari2 (from cashier screen)"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500 text-xs"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  If the cashier already signed in and saw the &quot;No Business Membership&quot; screen, paste their UID here to link them instantly.
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-300 font-medium block mb-1">Role *</label>
@@ -5996,6 +6042,7 @@ if (!deleteResult) {
                       assignedShopIds: createUserForm.assignedShopIds,
                       permissions: createUserForm.permissions,
                       reason: createUserForm.reason.trim(),
+                      firebaseUid: createUserForm.firebaseUid?.trim() || undefined,
                     });
 
                     addAuditLog({
@@ -6038,6 +6085,116 @@ if (!deleteResult) {
                     <span>Create User</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL 6b: LINK FIREBASE AUTH UID                         */}
+      {/* ========================================================= */}
+      {linkUidModalUser && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl text-xs">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                <Users className="w-5 h-5 text-emerald-400" />
+                <span>Link Firebase Auth UID</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setLinkUidModalUser(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800">
+                <span className="text-slate-400 block text-[11px]">Staff Member</span>
+                <span className="font-bold text-white text-sm">
+                  {linkUidModalUser.fullName || linkUidModalUser.username}
+                </span>
+                <span className="text-slate-400 block text-xs mt-0.5">
+                  {linkUidModalUser.email} · Role: {linkUidModalUser.role}
+                </span>
+                <span className="text-slate-500 block text-[10px] font-mono mt-1">
+                  Current Internal ID: {linkUidModalUser.id}
+                </span>
+              </div>
+
+              <div>
+                <label className="text-slate-300 font-medium block mb-1">
+                  Firebase Auth UID *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={linkUidVal}
+                  onChange={(e) => setLinkUidVal(e.target.value)}
+                  placeholder="Paste UID (e.g. 8JbTcgrEUOcAo9CdirSYzwMpari2)"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Copy this directly from the cashier&apos;s &quot;No Business Membership&quot; screen.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-slate-300 font-medium block mb-1">
+                  Administrative Reason (Audit Log) *
+                </label>
+                <textarea
+                  rows={2}
+                  required
+                  value={linkUidReason}
+                  onChange={(e) => setLinkUidReason(e.target.value)}
+                  placeholder="e.g. Linked live terminal UID from cashier device..."
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setLinkUidModalUser(null)}
+                disabled={linkUidBusy}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={linkUidBusy || !linkUidVal.trim() || !linkUidReason.trim()}
+                onClick={async () => {
+                  if (!onLinkUserFirebaseUid) {
+                    showFeedback('error', 'UID linking handler not configured.');
+                    return;
+                  }
+                  setLinkUidBusy(true);
+                  try {
+                    await onLinkUserFirebaseUid(
+                      linkUidModalUser,
+                      linkUidVal.trim(),
+                      linkUidReason.trim()
+                    );
+                    showFeedback(
+                      'success',
+                      `Successfully linked Firebase UID for ${linkUidModalUser.email}. Staff member can now click "Retry / Refresh".`
+                    );
+                    setLinkUidModalUser(null);
+                  } catch (err: any) {
+                    showFeedback('error', err?.message || 'Failed to link UID.');
+                  } finally {
+                    setLinkUidBusy(false);
+                  }
+                }}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white shadow-md transition flex items-center gap-1.5 cursor-pointer"
+              >
+                {linkUidBusy ? 'Linking UID...' : 'Save & Link UID'}
               </button>
             </div>
           </div>

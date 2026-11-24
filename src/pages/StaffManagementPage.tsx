@@ -160,6 +160,7 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
   );
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [staffUidInput, setStaffUidInput] = useState<string>('');
   const [selectedRoleKey, setSelectedRoleKey] = useState<string>(
     savedDraft?.selectedRoleKey ?? 'cashier'
   );
@@ -261,6 +262,7 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
     setEmailInput('');
     setPasswordInput('');
     setShowPassword(false);
+    setStaffUidInput('');
     setSelectedRoleKey('cashier');
     setRoleLabelInput('Cashier');
     setCustomRoleIdInput(undefined);
@@ -366,6 +368,7 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
       fullName: fullNameInput,
       email: emailInput,
       password: passwordInput.trim() || undefined,
+      staffUid: staffUidInput.trim() || undefined,
       role: baseRole,
       roleLabel: roleLabelInput,
       customRoleId: customRoleIdInput,
@@ -1089,6 +1092,28 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
                     </div>
                     <p className="text-[10px] text-slate-500 mt-1">
                       Allows staff to log in immediately without waiting for or needing email verification.
+                    </p>
+                  </div>
+                )}
+
+                {!editingStaff && (
+                  <div>
+                    <label
+                      htmlFor="staff-form-uid"
+                      className="block font-semibold text-slate-700 mb-1"
+                    >
+                      Firebase Auth UID (Optional)
+                    </label>
+                    <input
+                      id="staff-form-uid"
+                      type="text"
+                      value={staffUidInput}
+                      onChange={(e) => setStaffUidInput(e.target.value)}
+                      placeholder="e.g. 8JbTcgrEUOcAo9CdirSYzwMpari2 (from cashier screen)"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-emerald-600"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      If the cashier already signed in and saw the &quot;No Business Membership&quot; screen, paste their UID here.
                     </p>
                   </div>
                 )}

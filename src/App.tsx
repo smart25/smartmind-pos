@@ -3131,9 +3131,9 @@ useEffect(() => {
   };
 
   const handleCreateStaff = async (input: CreateStaffInput): Promise<User> => {
-    let explicitStaffUid: string | undefined;
+    let explicitStaffUid: string | undefined = input.staffUid?.trim() || undefined;
 
-    if (dataMode !== 'demo' && input.password?.trim()) {
+    if (!explicitStaffUid && dataMode !== 'demo' && input.password?.trim()) {
       try {
         const provisioned = await provisionStaffAccount({
           email: input.email,
@@ -5520,8 +5520,9 @@ useEffect(() => {
               );
             }}
             onCreateUser={async (params) => {
-              let explicitUserId: string | undefined;
-              if (dataMode !== 'demo' && params.password?.trim()) {
+              let explicitUserId: string | undefined =
+                params.firebaseUid?.trim() || undefined;
+              if (!explicitUserId && dataMode !== 'demo' && params.password?.trim()) {
                 try {
                   const provisioned = await provisionStaffAccount({
                     email: params.email,
@@ -5581,6 +5582,47 @@ useEffect(() => {
               );
               setShopAssignments((prev) => [...prev, ...newAssignments]);
               return createdUser;
+            }}
+            onLinkUserFirebaseUid={async (targetUser, newFirebaseUid, reason) => {
+              const cleanUid = newFirebaseUid.trim();
+              if (!cleanUid || cleanUid.length < 5) {
+                throw new Error('A valid Firebase Auth UID is required.');
+              }
+
+              const updatedUser: User = {
+                ...targetUser,
+                id: cleanUid,
+                authUidLinked: true,
+              };
+
+              if (dataMode !== 'demo' && liveDataService) {
+                await liveDataService.saveUserProfile(updatedUser);
+                await liveDataService.recordPlatformAuditLog({
+                  businessId: targetUser.businessId,
+                  businessName: targetUser.businessId,
+                  adminUid: currentUser.id,
+                  adminEmail: currentUser.email,
+                  adminName: currentUser.fullName,
+                  action: 'staff_user_updated',
+                  targetEntityType: 'user',
+                  targetEntityId: cleanUid,
+                  targetEntityName: targetUser.fullName || targetUser.email,
+                  reason: reason || 'Linked Firebase Authentication UID',
+                  previousState: { id: targetUser.id },
+                  newState: { id: cleanUid, email: targetUser.email },
+                });
+              }
+
+              setUsers((prev) => [
+                ...prev.filter((u) => u.id !== targetUser.id && u.id !== cleanUid),
+                updatedUser,
+              ]);
+
+              setShopAssignments((prev) =>
+                prev.map((a) =>
+                  a.userId === targetUser.id ? { ...a, userId: cleanUid } : a
+                )
+              );
             }}
             onCreateShop={handleCreateShop}
             onUpdateShop={handleUpdateShop}
