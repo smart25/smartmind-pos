@@ -3491,7 +3491,9 @@ useEffect(() => {
         if (prod.shopId !== activeShop.id) return prod;
         const cartMatch = cart.find((c) => c.product.id === prod.id);
         if (!cartMatch) return prod;
-        const newQty = Math.max(0, prod.stockQuantity - cartMatch.quantity);
+        const unDeductedQty = Math.max(0, cartMatch.quantity - (cartMatch.dispatchedQuantity || 0));
+        if (unDeductedQty <= 0) return prod;
+        const newQty = Math.max(0, prod.stockQuantity - unDeductedQty);
         const updatedProd: Product = {
           ...prod,
           stockQuantity: newQty,
@@ -3863,6 +3865,101 @@ useEffect(() => {
       ).catch((err) => {
         setLiveErrorMessage(err instanceof Error ? err.message : 'Failed to synchronize inventory movement.');
       });
+    }
+  };
+
+  const handleDispatchTabItems = (
+    _tabId: string,
+    itemsToDispatch: Array<{ product: Product; quantity: number }>,
+    tableName: string
+  ) => {
+    if (!activeShop || itemsToDispatch.length === 0) return;
+    const nowFormatted = formatPosTimestamp();
+
+    setProducts((prev) =>
+      prev.map((prod) => {
+        if (prod.shopId !== activeShop.id) return prod;
+        const match = itemsToDispatch.find((i) => i.product.id === prod.id);
+        if (!match || match.quantity <= 0) return prod;
+        const newQty = Math.max(0, prod.stockQuantity - match.quantity);
+        return {
+          ...prod,
+          stockQuantity: newQty,
+          updatedAt: nowFormatted,
+        };
+      })
+    );
+
+    for (const item of itemsToDispatch) {
+      if (item.quantity <= 0) continue;
+      const target = activeShopProducts.find((p) => p.id === item.product.id) || item.product;
+      const { adjustment } = applyStockAdjustment(
+        target,
+        'damage_spoilage',
+        item.quantity,
+        `Dispatched to ${tableName || 'Bar Tab'}`,
+        currentUser,
+        nowFormatted
+      );
+      setStockAdjustments((prev) => [adjustment, ...prev]);
+
+      if (dataMode !== 'demo') {
+        liveDataService.persistInventoryMovement(adjustment,
+          isPlatformSupportMode && activeSupportSession
+            ? activeSupportSession.supportSessionId
+            : undefined
+        ).catch((err) => {
+          console.warn('Inventory dispatch sync warning:', err);
+        });
+      }
+    }
+  };
+
+  const handleVoidTabItems = (
+    _tabId: string,
+    itemsToVoid: Array<{ product: Product; quantity: number }>,
+    tableName: string,
+    reason: string
+  ) => {
+    if (!activeShop || itemsToVoid.length === 0) return;
+    const nowFormatted = formatPosTimestamp();
+
+    setProducts((prev) =>
+      prev.map((prod) => {
+        if (prod.shopId !== activeShop.id) return prod;
+        const match = itemsToVoid.find((i) => i.product.id === prod.id);
+        if (!match || match.quantity <= 0) return prod;
+        const newQty = prod.stockQuantity + match.quantity;
+        return {
+          ...prod,
+          stockQuantity: newQty,
+          updatedAt: nowFormatted,
+        };
+      })
+    );
+
+    for (const item of itemsToVoid) {
+      if (item.quantity <= 0) continue;
+      const target = activeShopProducts.find((p) => p.id === item.product.id) || item.product;
+      const { adjustment } = applyStockAdjustment(
+        target,
+        'return_in',
+        item.quantity,
+        `Voided from ${tableName || 'Bar Tab'}: ${reason || 'Customer canceled before consumption'}`,
+        currentUser,
+        nowFormatted
+      );
+      setStockAdjustments((prev) => [adjustment, ...prev]);
+
+      if (dataMode !== 'demo') {
+        liveDataService.persistInventoryMovement(adjustment,
+          isPlatformSupportMode && activeSupportSession
+            ? activeSupportSession.supportSessionId
+            : undefined
+        ).catch((err) => {
+          console.warn('Inventory void sync warning:', err);
+        });
+      }
     }
   };
 
@@ -4462,6 +4559,7 @@ useEffect(() => {
         | 'receiptHeaderNote'
         | 'receiptFooterNote'
         | 'printerSettings'
+        | 'enableTableTabs'
       >
     >
   ) => {
@@ -5642,6 +5740,8 @@ useEffect(() => {
                 onProcessReceiptReturn={handleProcessReceiptReturn}
                 onAddDebtCustomer={handleAddDebtCustomer}
                 onRecordDebtTransaction={handleRecordDebtTransaction}
+                onDispatchTabItems={handleDispatchTabItems}
+                onVoidTabItems={handleVoidTabItems}
                 onOpenDebtBook={
                   canUserAccessView(currentUser, 'debt_book')
                     ? () => setActiveView('debt_book')

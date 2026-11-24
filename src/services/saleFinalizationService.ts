@@ -242,21 +242,22 @@ export class SaleFinalizationService {
         if (freshProduct.is_active !== 1) {
           throw new Error(`Product "${freshProduct.name}" is deactivated and cannot be sold.`);
         }
-        if (freshProduct.stock_quantity < item.quantity) {
-          if (item.product && (item.product.stockQuantity ?? 0) >= item.quantity) {
+        const unDeductedQty = Math.max(0, item.quantity - (item.dispatchedQuantity || 0));
+        if (unDeductedQty > 0 && freshProduct.stock_quantity < unDeductedQty) {
+          if (item.product && (item.product.stockQuantity ?? 0) >= unDeductedQty) {
             freshProduct.stock_quantity = item.product.stockQuantity;
           } else {
             throw new Error(
-              `Insufficient stock for "${freshProduct.name}". Available: ${freshProduct.stock_quantity}, Requested: ${item.quantity}.`
+              `Insufficient stock for "${freshProduct.name}". Available: ${freshProduct.stock_quantity}, Requested: ${unDeductedQty}.`
             );
           }
         }
 
-        const newStock = freshProduct.stock_quantity - item.quantity;
+        const newStock = Math.max(0, freshProduct.stock_quantity - unDeductedQty);
         productsToUpdate.push({
           product: freshProduct,
           newStock,
-          qtyDeducted: item.quantity,
+          qtyDeducted: unDeductedQty,
         });
       }
 

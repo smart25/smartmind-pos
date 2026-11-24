@@ -2384,12 +2384,27 @@ export interface PosCustomerTab {
   cart: CartItem[];
   discountInput: string;
   discountMode: 'percent' | 'fixed';
-  status: 'billing' | 'awaiting_payment';
+  status: 'billing' | 'awaiting_payment' | 'table_active';
   pendingPaymentMethod: PaymentMethod | null;
   amountTenderedInput: string;
   paymentReference: string;
   selectedCreditCustomerId?: string | null;
   createdAt: string;
+  tableIdentifier?: string;
+  serverName?: string;
+  guestCount?: number;
+  openedAtTimestamp?: number;
+  lastDispatchedAt?: string;
+  interimBillPrintedAt?: string;
+  isTableTab?: boolean;
+}
+
+export interface CreatePosCustomerTabOptions {
+  customLabel?: string;
+  tableIdentifier?: string;
+  serverName?: string;
+  guestCount?: number;
+  isTableTab?: boolean;
 }
 
 /**
@@ -2398,16 +2413,23 @@ export interface PosCustomerTab {
  */
 export function createPosCustomerTab(
   existingTabs: PosCustomerTab[],
-  customLabel?: string
+  customLabelOrOptions?: string | CreatePosCustomerTabOptions
 ): PosCustomerTab {
+  const options: CreatePosCustomerTabOptions =
+    typeof customLabelOrOptions === 'string'
+      ? { customLabel: customLabelOrOptions }
+      : customLabelOrOptions || {};
+
   const maxNumber = existingTabs.reduce(
     (max, tab) => Math.max(max, tab.tabNumber || 0),
     0
   );
   const nextNumber = maxNumber + 1;
   const label =
-    customLabel && customLabel.trim()
-      ? customLabel.trim()
+    options.tableIdentifier && options.tableIdentifier.trim()
+      ? options.tableIdentifier.trim()
+      : options.customLabel && options.customLabel.trim()
+      ? options.customLabel.trim()
       : `Customer #${nextNumber}`;
 
   const now = new Date();
@@ -2424,12 +2446,17 @@ export function createPosCustomerTab(
     cart: [],
     discountInput: '0',
     discountMode: 'percent',
-    status: 'billing',
+    status: options.isTableTab ? 'table_active' : 'billing',
     pendingPaymentMethod: null,
     amountTenderedInput: '',
     paymentReference: '',
     selectedCreditCustomerId: null,
     createdAt: `${hr12}:${mins} ${ampm}`,
+    tableIdentifier: options.tableIdentifier?.trim(),
+    serverName: options.serverName?.trim(),
+    guestCount: options.guestCount,
+    openedAtTimestamp: Date.now(),
+    isTableTab: options.isTableTab ?? false,
   };
 }
 
@@ -2487,11 +2514,44 @@ export function getReservedStockAcrossTabs(
   for (const tab of tabs) {
     if (excludeTabId && tab.id === excludeTabId) continue;
     for (const item of tab.cart) {
-      reserved[item.product.id] =
-        (reserved[item.product.id] || 0) + item.quantity;
+      const unDispatchedQty = Math.max(0, item.quantity - (item.dispatchedQuantity || 0));
+      if (unDispatchedQty > 0) {
+        reserved[item.product.id] =
+          (reserved[item.product.id] || 0) + unDispatchedQty;
+      }
     }
   }
   return reserved;
+}
+
+export interface TabDispatchedAnalysis {
+  totalItems: number;
+  dispatchedCount: number;
+  pendingDispatchCount: number;
+  hasUndispatchedItems: boolean;
+  canPrintInterimBill: boolean;
+}
+
+/**
+ * Evaluates the dispatch state of a bar/restaurant customer tab.
+ */
+export function analyzeTabDispatchStatus(cart: CartItem[]): TabDispatchedAnalysis {
+  let totalItems = 0;
+  let dispatchedCount = 0;
+
+  for (const item of cart) {
+    totalItems += item.quantity;
+    dispatchedCount += Math.min(item.quantity, item.dispatchedQuantity || 0);
+  }
+
+  const pendingDispatchCount = Math.max(0, totalItems - dispatchedCount);
+  return {
+    totalItems,
+    dispatchedCount,
+    pendingDispatchCount,
+    hasUndispatchedItems: pendingDispatchCount > 0,
+    canPrintInterimBill: totalItems > 0,
+  };
 }
 
 export interface CreateDebtCustomerInput {

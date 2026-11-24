@@ -79,6 +79,7 @@ interface SettingsPageProps {
         | 'receiptHeaderNote'
         | 'receiptFooterNote'
         | 'printerSettings'
+        | 'enableTableTabs'
       >
     >
   ) => void;
@@ -168,6 +169,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [shopFooterInput, setShopFooterInput] = useState<string>(
     savedDraft?.shopFooterInput ?? activeShop.receiptFooterNote
   );
+  const [enableTableTabs, setEnableTableTabs] = useState<boolean>(() => {
+    if (savedDraft?.enableTableTabs !== undefined) {
+      return Boolean(savedDraft.enableTableTabs);
+    }
+    return (
+      activeShop.enableTableTabs ??
+      (activeShop.category === 'Bar & Lounge' ||
+        activeShop.category === 'Restaurant & Bakery')
+    );
+  });
   const [selectedCurrencyCode, setSelectedCurrencyCode] = useState<string>(
     business.currencyCode || BASE_CURRENCY_CODE
   );
@@ -864,6 +875,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       vatEnabled,
       printVatOnReceipt: vatEnabled ? printVatOnReceipt : false,
       receiptFooterNote: shopFooterInput.trim(),
+      enableTableTabs,
     });
     const option = getCurrencyOptionByCode(selectedCurrencyCode);
     onUpdateBusinessCurrency(business.id, option.code);
@@ -1384,6 +1396,58 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           />
                         </button>
                       </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bar & Restaurant Table / Open Tab Controls */}
+                <div className="md:col-span-2 p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-800 text-sm">
+                          Bar &amp; Restaurant Table Tabs (Open Tabs)
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                            enableTableTabs
+                              ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {enableTableTabs ? 'Active / Enabled' : 'Disabled (Standard Retail)'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {enableTableTabs
+                          ? 'Waiters and cashiers can open tabs by table/customer name, dispatch drink rounds with real-time stock deduction, and print interim verification bills.'
+                          : 'Table tabs are disabled. POS operates in instant counter-checkout mode (supermarkets, retail stores, express marts).'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setEnableTableTabs(false)}
+                        className={`px-3.5 py-1.5 rounded-lg font-semibold text-xs transition-colors cursor-pointer ${
+                          !enableTableTabs
+                            ? 'bg-slate-800 text-white shadow-xs'
+                            : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        Retail Mode
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEnableTableTabs(true)}
+                        className={`px-3.5 py-1.5 rounded-lg font-semibold text-xs transition-colors cursor-pointer ${
+                          enableTableTabs
+                            ? 'bg-amber-600 text-white shadow-xs'
+                            : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        Enable Table Tabs
+                      </button>
                     </div>
                   </div>
                 </div>

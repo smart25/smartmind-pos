@@ -1,5 +1,10 @@
-import { Business, Shop, SaleTransaction } from '../types/pos';
-import { formatCurrency, getShopPrinterSettings } from './posCalculations';
+import { Business, Shop, SaleTransaction, User } from '../types/pos';
+import {
+  formatCurrency,
+  getShopPrinterSettings,
+  PosCustomerTab,
+  calculateCartTotals,
+} from './posCalculations';
 
 export interface EffectivePrinterResolution {
   printerName: string;
@@ -498,5 +503,265 @@ export async function printSaleReceipt(options: {
     success: false,
     printerName,
     failureReason: 'No printer interface available in this environment.',
+  };
+}
+
+/**
+ * Generates an Interim Bill / Pro-Forma Check HTML string for thermal or A4 printing
+ * so a bar customer can review their running table bill before settlement.
+ */
+export function generateInterimTabBillHtml(options: {
+  tab: PosCustomerTab;
+  shop: Shop;
+  business: Business;
+  currentUser: User;
+  paperWidth?: '80mm' | '58mm';
+}): string {
+  const { tab, shop, business, currentUser, paperWidth = '80mm' } = options;
+  const symbol = business.currencySymbol || '₦';
+  const discountVal = Math.max(0, parseFloat(tab.discountInput) || 0);
+  const totals = calculateCartTotals(
+    tab.cart,
+    discountVal,
+    tab.discountMode,
+    shop.taxRatePercent
+  );
+
+  const rollWidth = paperWidth === '58mm' ? '48mm' : '72mm';
+  const tableLabel = tab.tableIdentifier || tab.label;
+  const serverLabel =
+    tab.serverName || currentUser.fullName || currentUser.username || 'Bar Staff';
+  const nowStr = new Date().toLocaleString('en-NG', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Interim Bill - ${escapeHtml(tableLabel)}</title>
+  <style>
+    @page {
+      margin: 0;
+      size: ${paperWidth} auto;
+    }
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: ${paperWidth === '58mm' ? '11px' : '12px'};
+      line-height: 1.35;
+      color: #000;
+      background: #fff;
+      margin: 0;
+      padding: 6px 8px;
+      width: ${rollWidth};
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact;
+    }
+    .center { text-align: center; }
+    .right { text-align: right; }
+    .bold { font-weight: bold; }
+    .divider {
+      border-top: 1px dashed #000;
+      margin: 6px 0;
+    }
+    .double-divider {
+      border-top: 2px dashed #000;
+      margin: 6px 0;
+    }
+    .banner {
+      border: 1px solid #000;
+      padding: 4px;
+      margin: 4px 0;
+      font-weight: bold;
+      text-align: center;
+      font-size: ${paperWidth === '58mm' ? '10px' : '11px'};
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 4px 0;
+    }
+    td {
+      padding: 2px 0;
+      vertical-align: top;
+    }
+    .item-qty {
+      width: 18%;
+      text-align: left;
+    }
+    .item-desc {
+      width: 52%;
+    }
+    .item-amt {
+      width: 30%;
+      text-align: right;
+    }
+    .totals-row td {
+      font-weight: bold;
+      font-size: ${paperWidth === '58mm' ? '12px' : '13px'};
+      padding-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="center">
+    <div class="bold" style="font-size: 14px;">${escapeHtml(shop.name)}</div>
+    ${shop.address ? `<div>${escapeHtml(shop.address)}</div>` : ''}
+    ${shop.phone ? `<div>Tel: ${escapeHtml(shop.phone)}</div>` : ''}
+  </div>
+
+  <div class="banner">
+    *** INTERIM BILL / PRO-FORMA ***<br/>
+    NOT A FINAL TAX RECEIPT
+  </div>
+
+  <div style="font-size: 11px;">
+    <div><strong>TABLE / TAB:</strong> ${escapeHtml(tableLabel)}</div>
+    <div><strong>SERVER / WAITER:</strong> ${escapeHtml(serverLabel)}</div>
+    <div><strong>OPENED:</strong> ${escapeHtml(tab.createdAt)}</div>
+    <div><strong>PRINTED:</strong> ${escapeHtml(nowStr)}</div>
+    ${tab.customerNote ? `<div><strong>NOTE:</strong> ${escapeHtml(tab.customerNote)}</div>` : ''}
+  </div>
+
+  <div class="divider"></div>
+
+  <table>
+    <thead>
+      <tr style="border-bottom: 1px solid #000; font-weight: bold;">
+        <td class="item-qty">QTY</td>
+        <td class="item-desc">ITEM</td>
+        <td class="item-amt">TOTAL</td>
+      </tr>
+    </thead>
+    <tbody>
+      ${tab.cart.map((item) => {
+        const itemLineTotal = item.product.sellingPrice * item.quantity;
+        const isDispatched = (item.dispatchedQuantity || 0) >= item.quantity;
+        return `
+        <tr>
+          <td class="item-qty bold">${item.quantity}x</td>
+          <td class="item-desc">
+            <div class="bold">${escapeHtml(item.product.name)}</div>
+            <div style="font-size: 10px; color: #444;">@ ${formatCurrency(item.product.sellingPrice, symbol)} ${isDispatched ? '✓' : '(pending)'}</div>
+          </td>
+          <td class="item-amt bold">${formatCurrency(itemLineTotal, symbol)}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>
+
+  <div class="divider"></div>
+
+  <table>
+    <tr>
+      <td class="right">Subtotal (${totals.itemCount} item${totals.itemCount === 1 ? '' : 's'}):</td>
+      <td class="right bold">${formatCurrency(totals.subtotal, symbol)}</td>
+    </tr>
+    ${totals.discountAmount > 0 ? `
+    <tr>
+      <td class="right">Discount:</td>
+      <td class="right">-${formatCurrency(totals.discountAmount, symbol)}</td>
+    </tr>` : ''}
+    ${totals.taxAmount > 0 && shop.printVatOnReceipt !== false && (shop.taxRatePercent || 0) > 0 ? `
+    <tr>
+      <td class="right">VAT (${shop.taxRatePercent}%):</td>
+      <td class="right">${formatCurrency(totals.taxAmount, symbol)}</td>
+    </tr>` : ''}
+    <tr class="totals-row">
+      <td class="right">CURRENT TOTAL:</td>
+      <td class="right">${formatCurrency(totals.totalAmount, symbol)}</td>
+    </tr>
+  </table>
+
+  <div class="double-divider"></div>
+
+  <div class="center" style="font-size: 10px;">
+    <p style="margin: 2px 0;">PLEASE VERIFY ALL ITEMS AT TABLE</p>
+    <p style="margin: 2px 0; font-weight: bold;">PAYMENT DUE UPON SERVICE COMPLETION</p>
+    <p style="margin: 4px 0 0 0; color: #666;">SmartMind POS · Bar &amp; Table Management</p>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Prints an interim bill to the configured receipt printer for customer table verification.
+ */
+export async function printInterimTabBill(options: {
+  tab: PosCustomerTab;
+  shop: Shop;
+  business: Business;
+  currentUser: User;
+  targetPrinterName?: string;
+}): Promise<PrintSaleReceiptResult> {
+  const { tab, shop, business, currentUser, targetPrinterName } = options;
+  const effective = resolveEffectivePrinter(shop);
+  const printerName = targetPrinterName || effective.printerName;
+  const format = effective.format;
+
+  const html = generateInterimTabBillHtml({
+    tab,
+    shop,
+    business,
+    currentUser,
+    paperWidth: effective.mode === 'thermal' ? (effective.format === 'thermal-58mm' ? '58mm' : '80mm') : '80mm',
+  });
+
+  const desktopApi = typeof window !== 'undefined' ? window.smartmindDesktopApi : undefined;
+
+  if (desktopApi?.printDocument) {
+    try {
+      const result = await desktopApi.printDocument({
+        printerName,
+        format,
+        html,
+        copies: 1,
+      });
+
+      return {
+        success: result.success,
+        printerName,
+        failureReason: result.failureReason,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        printerName,
+        failureReason: error instanceof Error ? error.message : 'Printing interim bill failed.',
+      };
+    }
+  }
+
+  // Web fallback: open print window
+  if (typeof window !== 'undefined') {
+    try {
+      const printWin = window.open('', '_blank', 'width=420,height=600');
+      if (printWin) {
+        printWin.document.open();
+        printWin.document.write(html);
+        printWin.document.close();
+        printWin.focus();
+        setTimeout(() => {
+          printWin.print();
+        }, 300);
+        return {
+          success: true,
+          printerName: 'Browser Print Preview',
+        };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        printerName: 'Browser Window',
+        failureReason: error instanceof Error ? error.message : 'Popup window blocked.',
+      };
+    }
+  }
+
+  return {
+    success: false,
+    printerName,
+    failureReason: 'No printer interface available.',
   };
 }

@@ -50,6 +50,7 @@ const SHOP_CATEGORIES: ShopCategory[] = [
   'Pharmacy',
   'Express Mart',
   'Restaurant & Bakery',
+  'Bar & Lounge',
   'Retail Store',
 ];
 

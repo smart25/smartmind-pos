@@ -6116,6 +6116,7 @@ if (!deleteResult) {
                     <option value="Pharmacy">Pharmacy</option>
                     <option value="Express Mart">Express Mart</option>
                     <option value="Restaurant & Bakery">Restaurant & Bakery</option>
+                    <option value="Bar & Lounge">Bar & Lounge</option>
                     <option value="Retail Store">Retail Store</option>
                   </select>
                 </div>

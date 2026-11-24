@@ -39,6 +39,10 @@ import {
   validateProductInput,
   findProductByBarcodeOrSku,
   normalizeBarcodeString,
+  createPosCustomerTab,
+  getReservedStockAcrossTabs,
+  analyzeTabDispatchStatus,
+  PosCustomerTab,
 } from './posCalculations';
 import {
   User,
@@ -1952,5 +1956,107 @@ test('findProductByBarcodeOrSku and normalizeBarcodeString robustly match barcod
   assert.equal(findProductByBarcodeOrSku(testProducts, shopA, businessId, '   '), undefined);
   assert.equal(findProductByBarcodeOrSku(testProducts, shopA, businessId, 'UNKNOWN-999'), undefined);
 });
+
+test('Bar & Table Tabs: creates table tab, calculates dispatch status, handles reserved stock, and generates interim bill', () => {
+  const dummyProduct1: Product = {
+    id: 'prod-heineken',
+    shopId: 'shop-bar',
+    businessId: 'biz-bar',
+    name: 'Heineken Lager Beer 600ml',
+    sku: 'BEER-HEIN-01',
+    barcode: '613000111222',
+    category: 'Beer & Cider',
+    costPrice: 800,
+    sellingPrice: 1200,
+    stockQuantity: 24,
+    reorderLevel: 6,
+    unit: 'bottle',
+    status: 'active',
+    createdAt: '2026-01-01',
+    updatedAt: '2026-01-01',
+  };
+
+  const dummyProduct2: Product = {
+    id: 'prod-peanuts',
+    shopId: 'shop-bar',
+    businessId: 'biz-bar',
+    name: 'Spiced Roasted Peanuts',
+    sku: 'SNACK-PEANUT',
+    category: 'Bar Snacks',
+    costPrice: 200,
+    sellingPrice: 500,
+    stockQuantity: 50,
+    reorderLevel: 10,
+    unit: 'pack',
+    status: 'active',
+    createdAt: '2026-01-01',
+    updatedAt: '2026-01-01',
+  };
+
+  // 1. Create Table Tab with tableIdentifier, serverName, and guestCount
+  const existingTabs: PosCustomerTab[] = [];
+  const tableTab = createPosCustomerTab(existingTabs, {
+    isTableTab: true,
+    tableIdentifier: 'Table 4 (VIP Lounge)',
+    serverName: 'Emeka Waiter',
+    guestCount: 4,
+  });
+
+  assert.equal(tableTab.isTableTab, true);
+  assert.equal(tableTab.tableIdentifier, 'Table 4 (VIP Lounge)');
+  assert.equal(tableTab.label, 'Table 4 (VIP Lounge)');
+  assert.equal(tableTab.serverName, 'Emeka Waiter');
+  assert.equal(tableTab.guestCount, 4);
+  assert.equal(tableTab.status, 'table_active');
+
+  // 2. Add drinks to tab cart (Round 1: 4 Heinekens)
+  tableTab.cart = [
+    { product: dummyProduct1, quantity: 4, dispatchedQuantity: 0 },
+    { product: dummyProduct2, quantity: 2, dispatchedQuantity: 0 },
+  ];
+
+  // Analyze dispatch status: all 6 items pending dispatch
+  const analysisRound1 = analyzeTabDispatchStatus(tableTab.cart);
+  assert.equal(analysisRound1.totalItems, 6);
+  assert.equal(analysisRound1.dispatchedCount, 0);
+  assert.equal(analysisRound1.pendingDispatchCount, 6);
+  assert.equal(analysisRound1.hasUndispatchedItems, true);
+  assert.equal(analysisRound1.canPrintInterimBill, true);
+
+  // Reserved stock across tabs before dispatch: all 4 Heinekens and 2 Peanuts reserved
+  const reservedBeforeDispatch = getReservedStockAcrossTabs([tableTab], 'other-tab-id');
+  assert.equal(reservedBeforeDispatch['prod-heineken'], 4);
+  assert.equal(reservedBeforeDispatch['prod-peanuts'], 2);
+
+  // 3. Dispatch Round 1 to Table 4 (Option 1: stock decremented immediately)
+  // When dispatched, dispatchedQuantity is set to quantity
+  tableTab.cart[0].dispatchedQuantity = 4;
+  tableTab.cart[1].dispatchedQuantity = 2;
+
+  const analysisDispatched = analyzeTabDispatchStatus(tableTab.cart);
+  assert.equal(analysisDispatched.totalItems, 6);
+  assert.equal(analysisDispatched.dispatchedCount, 6);
+  assert.equal(analysisDispatched.pendingDispatchCount, 0);
+  assert.equal(analysisDispatched.hasUndispatchedItems, false);
+
+  // Reserved stock across tabs after dispatch: since Option 1 already deducted from inventory,
+  // getReservedStockAcrossTabs must NOT reserve them again (prevents double deduction)
+  const reservedAfterDispatch = getReservedStockAcrossTabs([tableTab], 'other-tab-id');
+  assert.equal(reservedAfterDispatch['prod-heineken'] || 0, 0);
+  assert.equal(reservedAfterDispatch['prod-peanuts'] || 0, 0);
+
+  // 4. Customers order Round 2 (2 more Heinekens added to table)
+  tableTab.cart[0].quantity = 6; // was 4, now 6 (2 pending dispatch)
+  const analysisRound2 = analyzeTabDispatchStatus(tableTab.cart);
+  assert.equal(analysisRound2.totalItems, 8);
+  assert.equal(analysisRound2.dispatchedCount, 6);
+  assert.equal(analysisRound2.pendingDispatchCount, 2);
+  assert.equal(analysisRound2.hasUndispatchedItems, true);
+
+  // Reserved stock now reserves only the 2 undispatched Heinekens
+  const reservedRound2 = getReservedStockAcrossTabs([tableTab], 'other-tab-id');
+  assert.equal(reservedRound2['prod-heineken'], 2);
+});
+
 
 

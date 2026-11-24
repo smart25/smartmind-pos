@@ -155,6 +155,7 @@ export type ShopCategory =
   | 'Pharmacy'
   | 'Express Mart'
   | 'Restaurant & Bakery'
+  | 'Bar & Lounge'
   | 'Retail Store';
 
 export type ReceiptPrinterMode = 'thermal' | 'a4';
@@ -212,6 +213,7 @@ export interface Shop {
   lastSyncedAt: string;
   logoUrl?: string;
   printerSettings?: ShopPrinterSettings;
+  enableTableTabs?: boolean;
 }
 
 export interface ProductCategory {
@@ -328,6 +330,7 @@ export interface ProductTransfer {
 export interface CartItem {
   product: Product;
   quantity: number;
+  dispatchedQuantity?: number;
 }
 
 export type PaymentMethod =

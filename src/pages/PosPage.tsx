@@ -33,6 +33,9 @@ import {
   Lock,
   RotateCcw,
   ReceiptText,
+  Wine,
+  Send,
+  FileText,
 } from 'lucide-react';
 import {
   Business,
@@ -64,12 +67,14 @@ import {
   getShopPrinterSettings,
   getTodayYmd,
   PosCustomerTab,
+  analyzeTabDispatchStatus,
   validateDebtCustomerInput,
   validatePosCreditSale,
 } from '../utils/posCalculations';
 import {
   resolveEffectivePrinter,
   printSaleReceipt,
+  printInterimTabBill,
 } from '../utils/receiptPrinter';
 import {
   BarcodeCaptureModal,
@@ -111,6 +116,17 @@ interface PosPageProps {
     }
   ) => void;
   onOpenDebtBook?: () => void;
+  onDispatchTabItems?: (
+    tabId: string,
+    items: Array<{ product: Product; quantity: number }>,
+    tableName: string
+  ) => void;
+  onVoidTabItems?: (
+    tabId: string,
+    items: Array<{ product: Product; quantity: number }>,
+    tableName: string,
+    reason: string
+  ) => void;
 }
 
 interface PersistedPosDraft {
@@ -144,6 +160,8 @@ export const PosPage: React.FC<PosPageProps> = ({
   onAddDebtCustomer,
   onRecordDebtTransaction,
   onOpenDebtBook,
+  onDispatchTabItems,
+  onVoidTabItems,
 }) => {
   const draftStorageKey = getPosDraftStorageKey(currentUser.id, shop.id);
   const todayYmd = getTodayYmd();
@@ -290,6 +308,42 @@ export const PosPage: React.FC<PosPageProps> = ({
     message: string;
   } | null>(null);
 
+  // Bar & Table Tab Management State
+  const isTableTabsEnabled = Boolean(
+    shop.enableTableTabs || shop.category === 'Bar & Lounge'
+  );
+  const [tableModalOpen, setTableModalOpen] = useState<boolean>(false);
+  const [tableForm, setTableForm] = useState<{
+    tableIdentifier: string;
+    serverName: string;
+    guestCount: string;
+    customerNote: string;
+  }>({
+    tableIdentifier: '',
+    serverName: '',
+    guestCount: '',
+    customerNote: '',
+  });
+
+  const [voidModal, setVoidModal] = useState<{
+    open: boolean;
+    item: CartItem | null;
+    voidQuantity: number;
+    reason: string;
+  }>({
+    open: false,
+    item: null,
+    voidQuantity: 1,
+    reason: 'Customer cancelled / unopened drink returned',
+  });
+
+  const [isPrintingInterimBill, setIsPrintingInterimBill] =
+    useState<boolean>(false);
+  const [tabFeedback, setTabFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
   const handlePrintCompletedReceipt = async (
     receiptToPrint?: SaleTransaction | null
   ) => {
@@ -423,6 +477,11 @@ export const PosPage: React.FC<PosPageProps> = ({
   const reservedInOtherTabs = React.useMemo(
     () => getReservedStockAcrossTabs(tabs, activeTab.id),
     [tabs, activeTab.id]
+  );
+
+  const dispatchAnalysis = React.useMemo(
+    () => analyzeTabDispatchStatus(cart),
+    [cart]
   );
 
   const numericDiscount = Math.max(0, parseFloat(discountInput) || 0);
@@ -656,6 +715,175 @@ export const PosPage: React.FC<PosPageProps> = ({
     setBarcodeFeedback(null);
   };
 
+  const handleOpenNewTableModal = () => {
+    setTableForm({
+      tableIdentifier: `Table ${tabs.length + 1}`,
+      serverName: currentUser.fullName || currentUser.username || '',
+      guestCount: '2',
+      customerNote: '',
+    });
+    setTableModalOpen(true);
+  };
+
+  const handleCreateTableTab = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const ident =
+      tableForm.tableIdentifier.trim() || `Table ${tabs.length + 1}`;
+    const gCount = parseInt(tableForm.guestCount, 10) || undefined;
+    const newTab = createPosCustomerTab(tabs, {
+      isTableTab: true,
+      tableIdentifier: ident,
+      serverName:
+        tableForm.serverName.trim() ||
+        currentUser.fullName ||
+        currentUser.username,
+      guestCount: gCount,
+      customLabel: ident,
+    });
+    if (tableForm.customerNote.trim()) {
+      newTab.customerNote = tableForm.customerNote.trim();
+    }
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTabId(newTab.id);
+    setActivePaymentModal(null);
+    setBarcodeFeedback(null);
+    setTableModalOpen(false);
+    setTabFeedback({
+      type: 'success',
+      message: `Opened new tab for ${ident}. Drinks and food can now be added.`,
+    });
+  };
+
+  const handleDispatchActiveTab = () => {
+    const undispatchedItems = cart
+      .map((item) => {
+        const alreadyDispatched = item.dispatchedQuantity || 0;
+        const unDispatched = Math.max(0, item.quantity - alreadyDispatched);
+        return {
+          product: item.product,
+          quantity: unDispatched,
+        };
+      })
+      .filter((entry) => entry.quantity > 0);
+
+    if (undispatchedItems.length === 0) return;
+
+    const tableLabel = activeTab.tableIdentifier || activeTab.label;
+
+    onDispatchTabItems?.(activeTab.id, undispatchedItems, tableLabel);
+
+    const totalDispatchedCount = undispatchedItems.reduce(
+      (acc, i) => acc + i.quantity,
+      0
+    );
+
+    updateTab((t) => ({
+      ...t,
+      lastDispatchedAt: new Date().toISOString(),
+      cart: t.cart.map((item) => ({
+        ...item,
+        dispatchedQuantity: item.quantity,
+      })),
+    }));
+
+    setTabFeedback({
+      type: 'success',
+      message: `Dispatched ${totalDispatchedCount} item(s) to ${tableLabel}. Stock deducted from inventory.`,
+    });
+  };
+
+  const handleOpenVoidModal = (item: CartItem) => {
+    const dispatched = item.dispatchedQuantity || 0;
+    if (dispatched <= 0) return;
+    setVoidModal({
+      open: true,
+      item,
+      voidQuantity: 1,
+      reason: 'Customer cancelled / unopened drink returned',
+    });
+  };
+
+  const handleConfirmVoidItem = () => {
+    if (!voidModal.item) return;
+    const item = voidModal.item;
+    const maxVoidable = item.dispatchedQuantity || item.quantity;
+    const voidQty = Math.min(Math.max(1, voidModal.voidQuantity), maxVoidable);
+    const tableLabel = activeTab.tableIdentifier || activeTab.label;
+
+    onVoidTabItems?.(
+      activeTab.id,
+      [{ product: item.product, quantity: voidQty }],
+      tableLabel,
+      voidModal.reason
+    );
+
+    updateTab((t) => {
+      const updatedCart = t.cart
+        .map((cItem) => {
+          if (cItem.product.id !== item.product.id) return cItem;
+          const newQty = cItem.quantity - voidQty;
+          const newDispatched = Math.max(
+            0,
+            (cItem.dispatchedQuantity || 0) - voidQty
+          );
+          return {
+            ...cItem,
+            quantity: newQty,
+            dispatchedQuantity: newDispatched,
+          };
+        })
+        .filter((cItem) => cItem.quantity > 0);
+
+      return {
+        ...t,
+        cart: updatedCart,
+      };
+    });
+
+    setTabFeedback({
+      type: 'success',
+      message: `Voided ${voidQty}x ${item.product.name} from ${tableLabel}. Stock restored to inventory.`,
+    });
+    setVoidModal({ open: false, item: null, voidQuantity: 1, reason: '' });
+  };
+
+  const handlePrintInterimBill = async () => {
+    if (cart.length === 0) return;
+    setIsPrintingInterimBill(true);
+    try {
+      const result = await printInterimTabBill({
+        tab: activeTab,
+        shop,
+        business,
+        currentUser,
+      });
+      if (result.success) {
+        updateTab((t) => ({
+          ...t,
+          interimBillPrintedAt: new Date().toISOString(),
+        }));
+        setTabFeedback({
+          type: 'success',
+          message: `Interim Bill printed for ${
+            activeTab.tableIdentifier || activeTab.label
+          }. Present this to the customer for verification.`,
+        });
+      } else {
+        setTabFeedback({
+          type: 'error',
+          message: result.failureReason || 'Failed to print interim bill.',
+        });
+      }
+    } catch (err) {
+      setTabFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Printing failed.',
+      });
+    } finally {
+      setIsPrintingInterimBill(false);
+    }
+  };
+
   // Switch between open customer tabs
   const handleSelectTab = (tabId: string) => {
     if (tabId === activeTab.id) return;
@@ -667,6 +895,20 @@ export const PosPage: React.FC<PosPageProps> = ({
   // Close a customer tab
   const handleCloseTab = (tabId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    const tabToClose = tabs.find((t) => t.id === tabId);
+    if (tabToClose) {
+      const hasDispatched = tabToClose.cart.some(
+        (i) => (i.dispatchedQuantity || 0) > 0
+      );
+      if (hasDispatched) {
+        alert(
+          `Cannot close "${
+            tabToClose.tableIdentifier || tabToClose.label
+          }" because items have already been dispatched and deducted from inventory. Please finalize payment or void items to return stock before closing.`
+        );
+        return;
+      }
+    }
     const nextState = closePosCustomerTab(tabs, tabId, activeTab.id);
     setTabs(nextState.tabs);
     setActiveTabId(nextState.activeTabId);
@@ -765,6 +1007,15 @@ export const PosPage: React.FC<PosPageProps> = ({
   };
 
   const handleUpdateQuantity = (productId: string, nextQty: number) => {
+    const currentItem = cart.find((i) => i.product.id === productId);
+    const dispatched = currentItem?.dispatchedQuantity || 0;
+
+    // If attempting to reduce already dispatched/served items, require formal Void flow
+    if (currentItem && dispatched > 0 && nextQty < dispatched) {
+      handleOpenVoidModal(currentItem);
+      return;
+    }
+
     const heldElsewhere = reservedInOtherTabs[productId] || 0;
     updateTab((t) => {
       if (nextQty <= 0) {
@@ -1347,6 +1598,352 @@ export const PosPage: React.FC<PosPageProps> = ({
     );
   };
 
+  const renderTableTabModal = () => {
+    const quickTablePresets = [
+      'Table 1',
+      'Table 2',
+      'Table 3',
+      'Table 4',
+      'Table 5',
+      'Table 6',
+      'VIP 1',
+      'VIP 2',
+      'Bar Counter',
+      'Poolside',
+    ];
+
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="table-tab-modal-title"
+        className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+      >
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+          <div className="p-5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300">
+                <Wine className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 id="table-tab-modal-title" className="text-base font-bold text-white">
+                  Open New Table Tab
+                </h3>
+                <p className="text-xs text-indigo-200 mt-0.5">
+                  Track table orders, serve drinks, &amp; bill when done
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTableModalOpen(false)}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <form onSubmit={handleCreateTableTab} className="p-5 space-y-4">
+            {/* Quick table presets */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Quick Select Table / Section:
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {quickTablePresets.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() =>
+                      setTableForm((prev) => ({
+                        ...prev,
+                        tableIdentifier: preset,
+                      }))
+                    }
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                      tableForm.tableIdentifier === preset
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:text-indigo-900'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Custom Table Identifier */}
+            <div>
+              <label
+                htmlFor="table-ident-input"
+                className="block text-xs font-semibold text-slate-700 mb-1"
+              >
+                Table Name / Number <span className="text-rose-500">*</span>
+              </label>
+              <input
+                id="table-ident-input"
+                type="text"
+                required
+                value={tableForm.tableIdentifier}
+                onChange={(e) =>
+                  setTableForm((prev) => ({
+                    ...prev,
+                    tableIdentifier: e.target.value,
+                  }))
+                }
+                placeholder="e.g. Table 4, VIP 2, Balcony 1"
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            {/* Waiter / Server Name & Guest Count */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="server-name-input"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  Server / Waiter
+                </label>
+                <input
+                  id="server-name-input"
+                  type="text"
+                  value={tableForm.serverName}
+                  onChange={(e) =>
+                    setTableForm((prev) => ({
+                      ...prev,
+                      serverName: e.target.value,
+                    }))
+                  }
+                  placeholder="Staff name"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="guest-count-input"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  Guest Count
+                </label>
+                <input
+                  id="guest-count-input"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={tableForm.guestCount}
+                  onChange={(e) =>
+                    setTableForm((prev) => ({
+                      ...prev,
+                      guestCount: e.target.value,
+                    }))
+                  }
+                  placeholder="e.g. 4"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            {/* Optional Customer Tag / Note */}
+            <div>
+              <label
+                htmlFor="table-note-input"
+                className="block text-xs font-semibold text-slate-700 mb-1"
+              >
+                Special Note / Guest Identifier (Optional)
+              </label>
+              <input
+                id="table-note-input"
+                type="text"
+                value={tableForm.customerNote}
+                onChange={(e) =>
+                  setTableForm((prev) => ({
+                    ...prev,
+                    customerNote: e.target.value,
+                  }))
+                }
+                placeholder="e.g. Celebrating birthday, Regular customer"
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setTableModalOpen(false)}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Wine className="w-3.5 h-3.5" />
+                <span>Open Table Tab</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const renderVoidItemModal = () => {
+    if (!voidModal.open || !voidModal.item) return null;
+    const item = voidModal.item;
+    const dispatched = item.dispatchedQuantity || 0;
+
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="void-modal-title"
+        className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+      >
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+          <div className="p-5 bg-gradient-to-r from-rose-900 via-rose-950 to-slate-900 text-white flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-400/30 flex items-center justify-center text-rose-300">
+                <ShieldAlert className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 id="void-modal-title" className="text-base font-bold text-white">
+                  Void Dispatched Item
+                </h3>
+                <p className="text-xs text-rose-200 mt-0.5">
+                  Restores returned drink/item back to inventory
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setVoidModal({
+                  open: false,
+                  item: null,
+                  voidQuantity: 1,
+                  reason: '',
+                })
+              }
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">
+                    {item.product.name}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {formatCurrency(item.product.sellingPrice, symbol)} each
+                  </p>
+                </div>
+                <div className="text-right">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-900">
+                    {dispatched} Dispatched
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="void-qty-input"
+                className="block text-xs font-semibold text-slate-700 mb-1"
+              >
+                Quantity to Void &amp; Return to Inventory:
+              </label>
+              <input
+                id="void-qty-input"
+                type="number"
+                min="1"
+                max={dispatched}
+                value={voidModal.voidQuantity}
+                onChange={(e) =>
+                  setVoidModal((prev) => ({
+                    ...prev,
+                    voidQuantity: Math.max(1, parseInt(e.target.value, 10) || 1),
+                  }))
+                }
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-900 font-mono font-bold focus:outline-none focus:ring-2 focus:ring-rose-500"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Max voidable: {dispatched} unit(s)
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="void-reason-select"
+                className="block text-xs font-semibold text-slate-700 mb-1"
+              >
+                Reason for Void / Return:
+              </label>
+              <select
+                id="void-reason-select"
+                value={voidModal.reason}
+                onChange={(e) =>
+                  setVoidModal((prev) => ({
+                    ...prev,
+                    reason: e.target.value,
+                  }))
+                }
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-rose-500"
+              >
+                <option value="Customer cancelled before bottle opened">
+                  Customer cancelled before bottle opened
+                </option>
+                <option value="Defective or warm drink replaced">
+                  Defective or warm drink replaced
+                </option>
+                <option value="Order entry mistake by staff">
+                  Order entry mistake by staff
+                </option>
+                <option value="Customer changed drink preference">
+                  Customer changed drink preference
+                </option>
+              </select>
+            </div>
+
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+              <span className="font-bold">⚠️ Inventory Guarantee:</span> Confirmed voided items are automatically restored to {shop.name}&apos;s available shelf inventory.
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() =>
+                  setVoidModal({
+                    open: false,
+                    item: null,
+                    voidQuantity: 1,
+                    reason: '',
+                  })
+                }
+                className="px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmVoidItem}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Confirm Void &amp; Return Stock</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const awaitingPaymentCount = tabs.filter(
     (t) => t.status === 'awaiting_payment' && t.cart.length > 0
   ).length;
@@ -1409,6 +2006,18 @@ export const PosPage: React.FC<PosPageProps> = ({
               </button>
             )}
 
+            {isTableTabsEnabled && (
+              <button
+                type="button"
+                onClick={handleOpenNewTableModal}
+                aria-label="Open new table tab"
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 shadow-2xs"
+              >
+                <Wine className="w-3.5 h-3.5 shrink-0" />
+                <span>+ New Table Tab</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleOpenNewTab}
@@ -1416,7 +2025,7 @@ export const PosPage: React.FC<PosPageProps> = ({
               className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5 shrink-0" />
-              <span>New Customer Tab</span>
+              <span>{isTableTabsEnabled ? 'Quick Tab' : 'New Customer Tab'}</span>
             </button>
           </div>
         </div>
@@ -1465,9 +2074,31 @@ export const PosPage: React.FC<PosPageProps> = ({
                   >
                     <div className="flex flex-col">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-display font-bold">
-                          {tab.label}
-                        </span>
+                        {tab.isTableTab || tab.tableIdentifier ? (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              isSelected
+                                ? 'bg-indigo-500/30 text-indigo-200 border border-indigo-400/30'
+                                : 'bg-indigo-100 text-indigo-900 border border-indigo-200'
+                            }`}
+                          >
+                            <Wine className="w-2.5 h-2.5" />
+                            {tab.tableIdentifier || tab.label}
+                          </span>
+                        ) : (
+                          <span className="text-xs font-display font-bold">
+                            {tab.label}
+                          </span>
+                        )}
+                        {tab.serverName && (
+                          <span
+                            className={`text-[10px] ${
+                              isSelected ? 'text-indigo-200' : 'text-slate-500'
+                            }`}
+                          >
+                            · Waiter: {tab.serverName}
+                          </span>
+                        )}
                         {tab.customerNote.trim() && (
                           <span
                             className={`text-xs truncate max-w-[110px] ${
@@ -1987,14 +2618,23 @@ export const PosPage: React.FC<PosPageProps> = ({
                 {cart.length > 0 && (
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      const hasDispatched = cart.some(
+                        (i) => (i.dispatchedQuantity || 0) > 0
+                      );
+                      if (hasDispatched) {
+                        alert(
+                          'Cannot clear cart with already dispatched items. Please void individual dispatched items to safely return stock to inventory.'
+                        );
+                        return;
+                      }
                       updateTab((t) => ({
                         ...t,
                         cart: [],
                         status: 'billing',
                         pendingPaymentMethod: null,
-                      }))
-                    }
+                      }));
+                    }}
                     className="text-xs text-slate-300 hover:text-white underline cursor-pointer whitespace-nowrap"
                   >
                     Clear Cart
@@ -2002,6 +2642,60 @@ export const PosPage: React.FC<PosPageProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Tab Feedback Banner */}
+            {tabFeedback && (
+              <div
+                className={`mt-2 p-2.5 rounded-lg text-xs flex items-center justify-between gap-2 ${
+                  tabFeedback.type === 'success'
+                    ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-200'
+                    : 'bg-rose-500/20 border border-rose-500/40 text-rose-200'
+                }`}
+              >
+                <span>{tabFeedback.message}</span>
+                <button
+                  type="button"
+                  onClick={() => setTabFeedback(null)}
+                  className="text-slate-300 hover:text-white font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Table Details Badge Banner if Table Tab */}
+            {(activeTab.isTableTab || activeTab.tableIdentifier) && (
+              <div className="mt-2.5 p-2 rounded-lg bg-indigo-950/60 border border-indigo-700/50 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-white flex items-center gap-1.5">
+                    <Wine className="w-3.5 h-3.5 text-indigo-400" />
+                    {activeTab.tableIdentifier || activeTab.label}
+                  </span>
+                  {activeTab.serverName && (
+                    <span className="text-indigo-200 text-[11px]">
+                      · Server:{' '}
+                      <span className="font-semibold text-white">
+                        {activeTab.serverName}
+                      </span>
+                    </span>
+                  )}
+                  {activeTab.guestCount && (
+                    <span className="text-indigo-200 text-[11px]">
+                      · {activeTab.guestCount} Guests
+                    </span>
+                  )}
+                </div>
+                {activeTab.lastDispatchedAt && (
+                  <span className="text-[10px] text-indigo-300">
+                    Last dispatch:{' '}
+                    {new Date(activeTab.lastDispatchedAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* Optional Customer Name / Note Input for this Tab */}
             <div className="flex items-center gap-2 pt-1">
@@ -2020,6 +2714,31 @@ export const PosPage: React.FC<PosPageProps> = ({
               />
             </div>
           </div>
+
+          {/* Dispatch to Table Banner (Option 1: Immediate Stock Deduction) */}
+          {dispatchAnalysis.hasUndispatchedItems && (
+            <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-200 flex items-center justify-between gap-2">
+              <div className="text-xs text-indigo-950">
+                <div className="flex items-center gap-1.5 font-bold">
+                  <Wine className="w-4 h-4 text-indigo-700 shrink-0" />
+                  <span>
+                    {dispatchAnalysis.pendingDispatchCount} undispatched item(s)
+                  </span>
+                </div>
+                <p className="text-[11px] text-indigo-700 mt-0.5">
+                  Send to table now to deduct physical stock from bar shelf/fridge.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleDispatchActiveTab}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer shrink-0"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Dispatch to Table</span>
+              </button>
+            </div>
+          )}
 
           {/* Resume Pending Payment Banner when Tab is Awaiting Payment */}
           {activeTab.status === 'awaiting_payment' && cart.length > 0 && (
@@ -2063,6 +2782,9 @@ export const PosPage: React.FC<PosPageProps> = ({
             ) : (
               cart.map((item) => {
                 const lineTotal = item.product.sellingPrice * item.quantity;
+                const dispatched = item.dispatchedQuantity || 0;
+                const pending = Math.max(0, item.quantity - dispatched);
+
                 return (
                   <div
                     key={item.product.id}
@@ -2072,13 +2794,25 @@ export const PosPage: React.FC<PosPageProps> = ({
                       <p className="text-xs font-semibold text-slate-900 truncate">
                         {item.product.name}
                       </p>
-                      <p className="text-xs font-mono tabular-nums text-slate-500 mt-0.5">
-                        {formatCurrency(item.product.sellingPrice, symbol)} ×{' '}
-                        {item.quantity} {item.product.unit}
-                      </p>
+                      <div className="flex items-center gap-1.5 flex-wrap text-xs font-mono tabular-nums text-slate-500 mt-0.5">
+                        <span>
+                          {formatCurrency(item.product.sellingPrice, symbol)} ×{' '}
+                          {item.quantity} {item.product.unit}
+                        </span>
+                        {dispatched > 0 && (
+                          <span className="px-1.5 py-0.2 rounded text-[10px] font-sans font-bold bg-emerald-100 text-emerald-800">
+                            ✓ {dispatched} Dispatched
+                          </span>
+                        )}
+                        {pending > 0 && (
+                          <span className="px-1.5 py-0.2 rounded text-[10px] font-sans font-semibold bg-amber-100 text-amber-800">
+                            ⏳ {pending} Pending
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Quantity Controls */}
+                    {/* Quantity & Void Controls */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
@@ -2109,14 +2843,26 @@ export const PosPage: React.FC<PosPageProps> = ({
                       >
                         <Plus className="w-3 h-3" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateQuantity(item.product.id, 0)}
-                        aria-label={`Remove ${item.product.name} from cart`}
-                        className="p-1.5 text-slate-400 hover:text-red-600 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+
+                      {dispatched > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenVoidModal(item)}
+                          title={`Void dispatched ${item.product.name} & return stock`}
+                          className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 text-[10px] font-bold border border-rose-200 cursor-pointer"
+                        >
+                          Void
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateQuantity(item.product.id, 0)}
+                          aria-label={`Remove ${item.product.name} from cart`}
+                          className="p-1.5 text-slate-400 hover:text-red-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
 
                     <div className="w-24 text-right font-mono tabular-nums text-xs font-bold text-slate-900 shrink-0">
@@ -2209,6 +2955,34 @@ export const PosPage: React.FC<PosPageProps> = ({
                 </span>
               </div>
             </div>
+
+            {/* Interim Bill (Pre-Check Slip) for Customer Table Verification */}
+            {dispatchAnalysis.canPrintInterimBill && (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  disabled={cart.length === 0 || isPrintingInterimBill}
+                  onClick={handlePrintInterimBill}
+                  className="w-full py-2 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
+                >
+                  <FileText className="w-4 h-4 text-indigo-600" />
+                  <span>
+                    {isPrintingInterimBill
+                      ? 'Printing Interim Bill...'
+                      : 'Print Interim Bill (Pre-Check Slip)'}
+                  </span>
+                </button>
+                {activeTab.interimBillPrintedAt && (
+                  <p className="text-[10px] text-center text-slate-500 mt-1">
+                    Interim bill printed at{' '}
+                    {new Date(activeTab.interimBillPrintedAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Payment Action Buttons */}
             <div className="pt-2 space-y-2">
@@ -3061,6 +3835,12 @@ export const PosPage: React.FC<PosPageProps> = ({
       })()}
       {/* POS Return Modal */}
       {posReturnModalOpen && renderPosReturnModal()}
+
+      {/* Table Tab Opening Modal */}
+      {tableModalOpen && renderTableTabModal()}
+
+      {/* Void Dispatched Item Modal */}
+      {voidModal.open && renderVoidItemModal()}
 
       {/* POS Barcode Camera & Hardware Scanner Modal */}
       {cameraScannerOpen && (
