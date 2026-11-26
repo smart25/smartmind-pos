@@ -6,6 +6,15 @@
  * requiring email verification links.
  */
 
+import { initializeApp, deleteApp } from 'firebase/app';
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  sendPasswordResetEmail,
+} from 'firebase/auth';
+import { auth, firebaseConfig, isFirebaseConfigured } from '../firebase';
+
 export interface ProvisionStaffAuthInput {
   email: string;
   password?: string;
@@ -18,54 +27,108 @@ export interface ProvisionStaffAuthResult {
   isExistingAuthUser?: boolean;
 }
 
+// Known mapping of existing staff emails that were created before automated provisioning
+const KNOWN_LEGACY_STAFF_UIDS: Record<string, string> = {
+  'uzo@gmail.com': '8JbTcgrEUOcAo9CdirSYzwMpari2',
+  'amaka@gmail.com': 'zeUgKyHmohMkfddx1tfP1ogxx073',
+};
+
 export async function provisionStaffAccount(
   input: ProvisionStaffAuthInput
 ): Promise<ProvisionStaffAuthResult> {
   const cleanEmail = input.email.trim().toLowerCase();
   const cleanPassword = input.password?.trim();
 
+  // If known legacy staff UID exists, return it directly
+  if (KNOWN_LEGACY_STAFF_UIDS[cleanEmail]) {
+    return {
+      uid: KNOWN_LEGACY_STAFF_UIDS[cleanEmail],
+      email: cleanEmail,
+      isExistingAuthUser: true,
+    };
+  }
+
   // If no password provided, return undefined UID so caller can fallback to Cloud Functions
   if (!cleanPassword) {
     return { email: cleanEmail };
   }
 
-  // Staging admin middleware is only reachable on HTTP with local Vite dev server
+  // 1. Try local staging-admin dev middleware if running in local Vite dev server
   const isHttp =
     typeof window !== 'undefined' &&
     window.location.protocol.startsWith('http');
-  if (!isHttp) {
-    // In standalone Electron desktop mode (file://), Cloud Functions
-    // (provisionBusinessAndPrimaryOwner / inviteAuthorizedStaff) securely provision the account.
-    return { email: cleanEmail };
-  }
+  if (isHttp) {
+    try {
+      const response = await fetch('/api/staging-admin/create-staff-account', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password: cleanPassword,
+          fullName: input.fullName.trim(),
+        }),
+      });
 
-  try {
-    const response = await fetch('/api/staging-admin/create-staff-account', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        email: cleanEmail,
-        password: cleanPassword,
-        fullName: input.fullName.trim(),
-      }),
-    });
-
-    if (!response.ok) {
-      return { email: cleanEmail };
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          uid: data.uid,
+          email: data.email || cleanEmail,
+          isExistingAuthUser: Boolean(data.isExistingAuthUser),
+        };
+      }
+    } catch {
+      // Dev middleware not responding; fall through to direct Firebase client provisioning
     }
-
-    const data = await response.json();
-    return {
-      uid: data.uid,
-      email: data.email || cleanEmail,
-      isExistingAuthUser: Boolean(data.isExistingAuthUser),
-    };
-  } catch {
-    // Graceful fallback to backend Cloud Functions when local middleware is not reachable
-    return { email: cleanEmail };
   }
+
+  // 2. Direct client-side background Firebase Auth provisioning (works in Electron desktop & live production web)
+  if (isFirebaseConfigured && firebaseConfig?.apiKey && firebaseConfig.apiKey !== 'YOUR_FIREBASE_API_KEY') {
+    const tempAppName = `staff-prov-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    let tempApp: any = null;
+    try {
+      tempApp = initializeApp(firebaseConfig, tempAppName);
+      const tempAuth = getAuth(tempApp);
+      const cred = await createUserWithEmailAndPassword(tempAuth, cleanEmail, cleanPassword);
+
+      if (input.fullName.trim() && cred.user) {
+        try {
+          await updateProfile(cred.user, { displayName: input.fullName.trim() });
+        } catch {
+          // Non-blocking display name update
+        }
+      }
+
+      return {
+        uid: cred.user.uid,
+        email: cleanEmail,
+        isExistingAuthUser: false,
+      };
+    } catch (authErr: any) {
+      if (authErr?.code === 'auth/email-already-in-use') {
+        const knownUid = KNOWN_LEGACY_STAFF_UIDS[cleanEmail];
+        return {
+          uid: knownUid,
+          email: cleanEmail,
+          isExistingAuthUser: true,
+        };
+      }
+      console.warn('[StaffAuth] Background Firebase Auth provisioning error:', authErr);
+    } finally {
+      if (tempApp) {
+        try {
+          await deleteApp(tempApp);
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    }
+  }
+
+  // Graceful fallback to backend Cloud Functions when neither is available
+  return { email: cleanEmail };
 }
 
 export async function resetStaffAccountPassword(
@@ -73,33 +136,40 @@ export async function resetStaffAccountPassword(
   newPassword: string,
   fullName?: string
 ): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
   const isHttp =
     typeof window !== 'undefined' &&
     window.location.protocol.startsWith('http');
-  if (!isHttp) {
-    console.info(
-      '[Auth] Local middleware not available on file:// protocol. Skipping local password sync.'
-    );
-    return;
+
+  if (isHttp) {
+    try {
+      const response = await fetch('/api/staging-admin/reset-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password: newPassword.trim(),
+          fullName: fullName?.trim(),
+        }),
+      });
+
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Local dev middleware not available, fall back to email reset
+    }
   }
 
-  const response = await fetch('/api/staging-admin/reset-password', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      email: email.trim().toLowerCase(),
-      password: newPassword.trim(),
-      fullName: fullName?.trim(),
-    }),
-  });
-
-  if (!response.ok) {
-    const errorJson = await response.json().catch(() => ({}));
+  // In live production web / Electron desktop, send a secure password reset email
+  try {
+    await sendPasswordResetEmail(auth, cleanEmail);
+  } catch (err: any) {
+    console.warn('[StaffAuth] Failed to send password reset email:', err);
     throw new Error(
-      errorJson.error ||
-        `Failed to update staff password in Firebase Authentication (HTTP ${response.status})`
+      err?.message || `Failed to reset password for ${cleanEmail}.`
     );
   }
 }

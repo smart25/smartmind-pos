@@ -396,12 +396,7 @@ export const DEFAULT_CASHIER_PERMISSIONS = [
   'manage_invoices',
 ] as const;
 
-export const OWNER_ONLY_PERMISSION_KEYS = new Set<string>([
-  'manage_business_settings',
-  'manage_shops',
-  'manage_staff',
-  'view_business_reports',
-]);
+export const OWNER_ONLY_PERMISSION_KEYS = new Set<string>([]);
 
 export const MANAGER_ONLY_PERMISSION_KEYS = new Set<string>([
   'manage_products',
@@ -431,6 +426,10 @@ export const ALLOWED_CASHIER_PERMISSION_KEYS = new Set<string>([
 export const ALLOWED_SHOP_MANAGER_PERMISSION_KEYS = new Set<string>([
   ...ALLOWED_CASHIER_PERMISSION_KEYS,
   ...MANAGER_ONLY_PERMISSION_KEYS,
+  'manage_staff',
+  'manage_shops',
+  'manage_business_settings',
+  'view_business_reports',
 ]);
 
 export const ALLOWED_STAFF_PERMISSION_KEYS = ALLOWED_SHOP_MANAGER_PERMISSION_KEYS;

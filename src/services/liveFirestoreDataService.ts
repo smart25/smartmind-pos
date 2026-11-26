@@ -2855,6 +2855,40 @@ export class LiveFirestoreDataService {
           usersById.set(u.id, u);
         }
 
+        // Auto-reconcile known unlinked staff accounts to their canonical Firebase Auth UIDs
+        const knownStaffUidMap: Record<string, string> = {
+          'uzo@gmail.com': '8JbTcgrEUOcAo9CdirSYzwMpari2',
+          'amaka@gmail.com': 'zeUgKyHmohMkfddx1tfP1ogxx073',
+        };
+
+        for (const [staffEmail, targetUid] of Object.entries(knownStaffUidMap)) {
+          const match = listedUsers.find(
+            (u) => (u.email || '').trim().toLowerCase() === staffEmail.toLowerCase()
+          );
+          if (match && match.id !== targetUid) {
+            try {
+              const existingTarget = await this.cloudProvider.getUserProfile(targetUid);
+              if (!existingTarget) {
+                const linkedUser: User = {
+                  ...match,
+                  id: targetUid,
+                  authUidLinked: true,
+                  repairedFromUserId: match.id,
+                  repairedAt: new Date().toISOString(),
+                };
+                if (typeof this.cloudProvider.saveUserProfile === 'function') {
+                  await this.cloudProvider.saveUserProfile(linkedUser);
+                }
+                usersById.set(targetUid, linkedUser);
+              } else {
+                usersById.set(targetUid, existingTarget);
+              }
+            } catch (linkErr) {
+              console.warn(`[LiveSync] Failed to auto-reconcile staff UID for ${staffEmail}:`, linkErr);
+            }
+          }
+        }
+
         // Explicitly fetch each business's primary owner by canonical Firebase UID
         // so Refresh Live Data always retrieves the freshest /users/{uid} record.
         for (const biz of businesses) {

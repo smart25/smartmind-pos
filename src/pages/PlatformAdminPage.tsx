@@ -4350,9 +4350,13 @@ if (!deleteResult) {
                               >
                                 {authResolution.primaryState}
                               </span>
+                            ) : u.id.startsWith('usr-') ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300">
+                                Needs Auth UID
+                              </span>
                             ) : (
-                              <span className="text-slate-500 text-[10px]">
-                                Staff Account
+                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300">
+                                Auth UID Linked
                               </span>
                             )}
                           </td>
@@ -4389,6 +4393,21 @@ if (!deleteResult) {
                                 Send Setup Email
                               </button>
                             )}
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLinkUidModalUser(u);
+                                setLinkUidVal('');
+                                setLinkUidReason(
+                                  `Link Firebase Auth UID for ${u.fullName || u.email}`
+                                );
+                              }}
+                              className="px-2 py-1 text-xs rounded bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/50 cursor-pointer"
+                              title="Link Firebase Authentication UID"
+                            >
+                              Link UID
+                            </button>
 
                             <button
                               onClick={() => {
