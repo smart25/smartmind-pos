@@ -2893,6 +2893,10 @@ useEffect(() => {
       code,
       name: input.name.trim(),
       category: input.category ?? 'Supermarket',
+      enableTableTabs:
+        typeof input.enableTableTabs === 'boolean'
+          ? input.enableTableTabs
+          : input.category === 'Bar & Lounge',
       locationCity: input.locationCity?.trim() || targetBusiness.headquartersAddress || 'Lagos',
       address: input.address.trim(),
       phone: input.phone.trim() || targetBusiness.primaryPhone || '+2348000000000',
@@ -3015,6 +3019,12 @@ useEffect(() => {
         typeof input.taxRatePercent === 'number'
           ? input.taxRatePercent
           : existingShop.taxRatePercent,
+      enableTableTabs:
+        typeof input.enableTableTabs === 'boolean'
+          ? input.enableTableTabs
+          : input.category !== undefined
+            ? input.category === 'Bar & Lounge'
+            : existingShop.enableTableTabs,
     };
 
     setShops((prev) =>

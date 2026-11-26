@@ -203,6 +203,7 @@ export const LiveOnboardingPage: React.FC<LiveOnboardingPageProps> = ({
         {
           name: shopName.trim(),
           category: shopCategory,
+          enableTableTabs: shopCategory === 'Bar & Lounge',
           locationCity: shopCity.trim() || 'Lagos',
           address: headquartersAddress.trim() || 'Lagos, Nigeria',
           phone: primaryPhone.trim() || '+2348000000000',

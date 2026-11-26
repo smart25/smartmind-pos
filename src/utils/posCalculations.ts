@@ -963,6 +963,7 @@ export interface CreateShopInput {
   locationCity?: string;
   managerName?: string;
   taxRatePercent?: number;
+  enableTableTabs?: boolean;
 }
 
 /**

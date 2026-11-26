@@ -173,10 +173,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     if (savedDraft?.enableTableTabs !== undefined) {
       return Boolean(savedDraft.enableTableTabs);
     }
-    return (
+    return Boolean(
       activeShop.enableTableTabs ??
-      (activeShop.category === 'Bar & Lounge' ||
-        activeShop.category === 'Restaurant & Bakery')
+      activeShop.category === 'Bar & Lounge'
     );
   });
   const [selectedCurrencyCode, setSelectedCurrencyCode] = useState<string>(
@@ -236,6 +235,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   useEffect(() => {
     setPrinterSettings(getShopPrinterSettings(activeShop));
   }, [activeShop]);
+
+  useEffect(() => {
+    setEnableTableTabs(
+      Boolean(
+        activeShop.enableTableTabs ??
+        activeShop.category === 'Bar & Lounge'
+      )
+    );
+  }, [activeShop.id, activeShop.enableTableTabs, activeShop.category]);
 
   useEffect(() => {
     setSelectedCurrencyCode(business.currencyCode || BASE_CURRENCY_CODE);

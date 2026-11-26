@@ -1648,6 +1648,10 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
         typeof d.printVatOnReceipt === 'boolean' ? d.printVatOnReceipt : false,
       receiptHeaderNote: d.receiptHeaderNote || `${d.name} — Official Receipt`,
       receiptFooterNote: d.receiptFooterNote || 'Thank you for your patronage',
+      enableTableTabs:
+        typeof d.enableTableTabs === 'boolean'
+          ? d.enableTableTabs
+          : d.category === 'Bar & Lounge',
       createdAt: d.createdAt || new Date().toISOString(),
       pendingSyncCount: 0,
       lastSyncedAt: d.updatedAt || 'Cloud Synced',
@@ -2303,6 +2307,9 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
       payload.receiptFooterNote = shop.receiptFooterNote.slice(0, 300);
     if (shop.description)
       payload.description = shop.description.slice(0, 300);
+    if (typeof shop.enableTableTabs === 'boolean') {
+      payload.enableTableTabs = shop.enableTableTabs;
+    }
 
     await setDoc(shopRef, payload);
   }

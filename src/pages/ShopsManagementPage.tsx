@@ -125,6 +125,7 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
   const [categoryInput, setCategoryInput] = useState<ShopCategory>(
     savedDraft?.categoryInput ?? 'Supermarket'
   );
+  const [enableTableTabsInput, setEnableTableTabsInput] = useState<boolean>(false);
   const [descriptionInput, setDescriptionInput] = useState<string>(
     savedDraft?.descriptionInput ?? ''
   );
@@ -216,6 +217,7 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
     setCityInput(shop.locationCity);
     setPhoneInput(shop.phone);
     setCategoryInput(shop.category);
+    setEnableTableTabsInput(Boolean(shop.enableTableTabs || shop.category === 'Bar & Lounge'));
     setDescriptionInput(shop.description ?? '');
     setFormError(null);
     setFormOpen(true);
@@ -229,6 +231,7 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
       locationCity: cityInput,
       phone: phoneInput,
       category: categoryInput,
+      enableTableTabs: enableTableTabsInput,
       description: descriptionInput,
     };
 
@@ -577,6 +580,44 @@ export const ShopsManagementPage: React.FC<ShopsManagementPageProps> = ({
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-800 text-xs">
+                          Bar &amp; Restaurant Mode (Table Tabs)
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            enableTableTabsInput
+                              ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {enableTableTabsInput ? 'Bar Mode Active' : 'Retail Mode'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        {enableTableTabsInput
+                          ? 'Waiters and cashiers can open tabs by table/customer name, dispatch drink rounds, and print pro-forma interim bills.'
+                          : 'Table tabs are disabled. POS operates in instant counter-checkout mode (supermarkets, retail stores, express marts).'}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setEnableTableTabsInput(!enableTableTabsInput)}
+                      className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition cursor-pointer shrink-0 ${
+                        enableTableTabsInput
+                          ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-xs'
+                          : 'bg-slate-800 hover:bg-slate-900 text-white shadow-xs'
+                      }`}
+                    >
+                      {enableTableTabsInput ? 'Disable Bar Mode' : 'Enable Bar Mode'}
+                    </button>
+                  </div>
                 </div>
 
                 <div>

@@ -602,7 +602,18 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
   // 4. Shop Management Modals
   const [shopModalOpen, setShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<Shop | null>(null);
-  const [shopForm, setShopForm] = useState({
+  const [shopForm, setShopForm] = useState<{
+    businessId: string;
+    code: string;
+    name: string;
+    category: Shop['category'];
+    locationCity: string;
+    address: string;
+    phone: string;
+    managerName: string;
+    taxRatePercent: number;
+    enableTableTabs?: boolean;
+  }>({
     businessId: selectedWorkspaceBizId,
     code: '',
     name: '',
@@ -612,6 +623,7 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
     phone: '',
     managerName: '',
     taxRatePercent: 7.5,
+    enableTableTabs: false,
   });
 
   // 5. User Edit Role & Shops Modal
@@ -2574,6 +2586,7 @@ if (!deleteResult) {
                             phone: activeWorkspaceBusiness.primaryPhone || '',
                             managerName: '',
                             taxRatePercent: activeWorkspaceBusiness.defaultTaxRatePercent || 7.5,
+                            enableTableTabs: false,
                           });
                           setShopModalOpen(true);
                         }}
@@ -2918,6 +2931,7 @@ if (!deleteResult) {
                         phone: activeWorkspaceBusiness.primaryPhone,
                         managerName: activeWorkspaceBusiness.ownerName,
                         taxRatePercent: 7.5,
+                        enableTableTabs: false,
                       });
                       setShopModalOpen(true);
                     }}
@@ -3043,6 +3057,7 @@ if (!deleteResult) {
         phone: sh.phone,
         managerName: sh.managerName,
         taxRatePercent: sh.taxRatePercent,
+        enableTableTabs: Boolean(sh.enableTableTabs || sh.category === 'Bar & Lounge'),
       });
       setShopModalOpen(true);
     }}
@@ -6314,6 +6329,37 @@ if (!deleteResult) {
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
                   />
                 </div>
+              </div>
+
+              <div className="p-3 rounded-lg border border-slate-800 bg-slate-950 flex items-center justify-between gap-3 text-xs">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-white">Bar &amp; Restaurant Mode (Table Tabs)</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                      shopForm.enableTableTabs
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                        : 'bg-slate-800 text-slate-400'
+                    }`}>
+                      {shopForm.enableTableTabs ? 'Bar Mode Active' : 'Retail Mode'}
+                    </span>
+                  </div>
+                  <p className="text-slate-400 text-[11px] mt-0.5">
+                    {shopForm.enableTableTabs
+                      ? 'Enables table tabs, server assignment, multi-round drink dispatch, and interim pro-forma bills.'
+                      : 'Standard retail checkout (supermarkets, express groceries, pharmacies).'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShopForm((prev) => ({ ...prev, enableTableTabs: !prev.enableTableTabs }))}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shrink-0 transition ${
+                    shopForm.enableTableTabs
+                      ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                  }`}
+                >
+                  {shopForm.enableTableTabs ? 'Disable Bar Mode' : 'Enable Bar Mode'}
+                </button>
               </div>
 
               <div>

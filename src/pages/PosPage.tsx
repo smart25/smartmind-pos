@@ -310,7 +310,9 @@ export const PosPage: React.FC<PosPageProps> = ({
 
   // Bar & Table Tab Management State
   const isTableTabsEnabled = Boolean(
-    shop.enableTableTabs || shop.category === 'Bar & Lounge'
+    shop.enableTableTabs !== undefined
+      ? shop.enableTableTabs
+      : shop.category === 'Bar & Lounge'
   );
   const [tableModalOpen, setTableModalOpen] = useState<boolean>(false);
   const [tableForm, setTableForm] = useState<{

@@ -199,6 +199,7 @@ export const ShopSelectionPage: React.FC<ShopSelectionPageProps> = ({
       locationCity: cityInput,
       phone: phoneInput,
       category: categoryInput,
+      enableTableTabs: categoryInput === 'Bar & Lounge',
       description: descriptionInput,
     };
 
