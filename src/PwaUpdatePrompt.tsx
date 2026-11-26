@@ -7,13 +7,23 @@ export const PwaUpdatePrompt: React.FC = () => {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
   } = useRegisterSW({
-    onRegistered() {
-      // Service worker registered
+    onRegistered(r) {
+      if (r) {
+        setInterval(() => {
+          r.update().catch(() => {});
+        }, 60 * 1000);
+      }
     },
     onRegisterError() {
       // Non-fatal registration error in non-PWA or desktop environments
     },
   });
+
+  React.useEffect(() => {
+    if (needRefresh) {
+      updateServiceWorker(true);
+    }
+  }, [needRefresh, updateServiceWorker]);
 
   const handleClose = () => {
     setOfflineReady(false);
