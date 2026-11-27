@@ -61,6 +61,10 @@ const VIEW_TITLES: Record<AppView, { title: string; subtitle: string }> = {
     title: 'Expiring Products',
     subtitle: 'Track expiring batches, upcoming expiries, and take immediate risk action',
   },
+  generate_barcode: {
+    title: 'Generate Barcode',
+    subtitle: 'Create scannable barcodes for unlabelled items and print product sticker labels',
+  },
   invoices: {
     title: 'Invoicing & Quotations',
     subtitle: 'Generate customer invoices, search products & track payment statuses',

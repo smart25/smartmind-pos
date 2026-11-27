@@ -59,14 +59,14 @@ export function generateInventoryCsvTemplateString(): string {
   const sampleRows = [
     [
       'Golden Penny Sugar 500g',
-      '613000492811',
+      '="613000492811"',
       'Groceries & Baking',
       'Pack',
       '1200',
       '950',
       '50',
       '10',
-      '2027-12-31',
+      '="2027-12-31"',
       'No',
       'Yes',
     ],
@@ -85,14 +85,14 @@ export function generateInventoryCsvTemplateString(): string {
     ],
     [
       'Milo Refill 800g',
-      '613000994822',
+      '="613000994822"',
       'Beverages & Drinks',
       'Pack',
       '3800',
       '3200',
       '30',
       '5',
-      '2027-06-30',
+      '="2027-06-30"',
       'No',
       'Yes',
     ],
@@ -111,22 +111,27 @@ export function generateInventoryCsvTemplateString(): string {
     ],
     [
       'Eva Table Water 75cl',
-      '613000771234',
+      '="613000771234"',
       'Beverages & Drinks',
       'Bottle',
       '300',
       '200',
       '100',
       '20',
-      '2027-10-15',
+      '="2027-10-15"',
       'No',
       'Yes',
     ],
   ];
 
+  const formatTemplateCell = (cell: string): string => {
+    if (/^="[^"]*"$/.test(cell)) return cell;
+    return escapeCsvCell(cell);
+  };
+
   const csvLines = [
     INVENTORY_CSV_HEADERS.map(escapeCsvCell).join(','),
-    ...sampleRows.map((row) => row.map(escapeCsvCell).join(',')),
+    ...sampleRows.map((row) => row.map(formatTemplateCell).join(',')),
   ];
 
   // Prepend UTF-8 BOM (\uFEFF) so Excel, Google Sheets, Numbers open Unicode characters smoothly
@@ -170,6 +175,11 @@ function parseCleanNumber(val: string | undefined, defaultVal = 0): number {
 export function parseCleanBarcode(val: string | undefined): string {
   if (!val) return '';
   let clean = val.trim();
+  // Unwrap Excel formula-text format e.g. ="613000492811"
+  const excelTextMatch = clean.match(/^="?(.*?)"?$/);
+  if (excelTextMatch) {
+    clean = excelTextMatch[1].trim();
+  }
   if (!clean) return '';
 
   // Handle scientific notation e.g. 6.13000492811e+11 or 6.13E11 exported by Excel
@@ -197,7 +207,12 @@ export function parseCleanExpiryDate(val: string | undefined): {
   expiryDate: string | null;
 } {
   if (!val) return { hasExpiry: false, expiryDate: null };
-  const clean = val.trim();
+  let clean = val.trim();
+  // Unwrap Excel formula-text format e.g. ="2027-12-31"
+  const excelTextMatch = clean.match(/^="?(.*?)"?$/);
+  if (excelTextMatch) {
+    clean = excelTextMatch[1].trim();
+  }
   if (
     !clean ||
     ['n/a', 'na', 'none', 'no', 'nil', '-', 'null', 'undefined'].includes(

@@ -205,6 +205,7 @@ export function canUserAccessView(user: User, view: AppView): boolean {
     case 'inventory':
     case 'product_transfer':
     case 'expiring_products':
+    case 'generate_barcode':
       return (
         hasPermission(user, 'manage_products') ||
         hasPermission(user, 'adjust_inventory')

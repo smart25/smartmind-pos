@@ -1425,6 +1425,7 @@ export interface LiveCloudStoreProvider {
   listShopProducts(businessId: string, shopId: string): Promise<Product[]>;
   listShopSales(businessId: string, shopId: string): Promise<SaleTransaction[]>;
   saveUserProfile(user: User): Promise<void>;
+  deleteUserProfile?(userId: string): Promise<void>;
   saveBusiness(business: Business): Promise<void>;
   saveShop(shop: Shop): Promise<void>;
   saveProduct(product: Product): Promise<void>;
@@ -2214,6 +2215,10 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
         : {}),
     };
     await setDoc(userRef, payload);
+  }
+
+  async deleteUserProfile(userId: string): Promise<void> {
+    await deleteDoc(doc(db, 'users', userId));
   }
 
   async saveBusiness(business: Business): Promise<void> {
@@ -5301,6 +5306,12 @@ export class LiveFirestoreDataService {
 
   async saveUserProfile(user: User): Promise<void> {
     await this.cloudProvider.saveUserProfile(user);
+  }
+
+  async deleteUserProfile(userId: string): Promise<void> {
+    if (typeof this.cloudProvider.deleteUserProfile === 'function') {
+      await this.cloudProvider.deleteUserProfile(userId);
+    }
   }
 
   async persistLiveProduct(

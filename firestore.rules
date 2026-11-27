@@ -664,7 +664,17 @@ service cloud.firestore {
            request.resource.data.role in ['shop_manager', 'cashier'])
         );
 
-      allow delete: if false;
+      allow delete: if isAuthenticated() && (
+        (isPlatformAdmin() &&
+         userId != request.auth.uid &&
+         resource.data.email != "smartnwokolo@gmail.com" &&
+         resource.data.role != 'platform_admin') ||
+        ((isBusinessOwnerOf(resource.data.businessId) ||
+          (hasActiveProfile() && getUserProfile().businessId == resource.data.businessId && ('permissions' in getUserProfile()) && 'manage_staff' in getUserProfile().permissions)) &&
+         userId != request.auth.uid &&
+         resource.data.role in ['shop_manager', 'cashier'] &&
+         resource.data.email != "smartnwokolo@gmail.com")
+      );
     }
 
     // 2. Platform Provisioning Idempotency Ledger (/platform_provisioning_keys/{idempotencyKey})

@@ -57,6 +57,7 @@ interface StaffManagementPageProps {
     status: AccountStatus
   ) => void | Promise<void>;
   onToggleStaffStatus: (userId: string, nextStatus: AccountStatus) => void | Promise<void>;
+  onDeleteStaff?: (userId: string) => void | Promise<void>;
   onResetUserPassword?: (userId: string, newPassword: string) => void | Promise<void>;
   onCreateCustomRole?: (input: CreateCustomRoleInput) => CustomRole;
   onUpdateCustomRole?: (roleId: string, input: CreateCustomRoleInput) => void;
@@ -74,6 +75,7 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
   onCreateStaff,
   onUpdateStaff,
   onToggleStaffStatus,
+  onDeleteStaff,
   onResetUserPassword,
   onCreateCustomRole,
   onUpdateCustomRole,
@@ -834,6 +836,33 @@ export const StaffManagementPage: React.FC<StaffManagementPageProps> = ({
                                 <Power className="w-3.5 h-3.5" />
                                 <span>{isActive ? 'Suspend' : 'Activate'}</span>
                               </button>
+                              {onDeleteStaff && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const confirmed = window.confirm(
+                                      `Are you sure you want to permanently delete "${staff.fullName}" (${staff.email})? This will remove their access and profile completely.`
+                                    );
+                                    if (!confirmed) return;
+                                    try {
+                                      await onDeleteStaff(staff.id);
+                                      setFeedbackBanner(
+                                        `Permanently deleted staff account "${staff.fullName}" (${staff.email}).`
+                                      );
+                                    } catch (err: any) {
+                                      setFormError(
+                                        err?.message || 'Failed to delete staff account.'
+                                      );
+                                    }
+                                  }}
+                                  aria-label={`Delete ${staff.fullName}`}
+                                  title="Permanently delete user"
+                                  className="px-2 py-1 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Delete</span>
+                                </button>
+                              )}
                             </>
                           ) : (
                             !canActorResetUserPassword(currentUser, staff) && (

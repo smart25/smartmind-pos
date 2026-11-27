@@ -245,8 +245,14 @@ export const LiveOnboardingPage: React.FC<LiveOnboardingPageProps> = ({
                 )}
               </div>
               <div>
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
-                  Live Cloud Mode · Zero Sample Data Fallback
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[11px] font-semibold ${
+                  status === 'suspended'
+                    ? 'bg-rose-50 border-rose-200 text-rose-800'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                }`}>
+                  {status === 'suspended'
+                    ? 'Access Restricted'
+                    : 'Live Cloud Mode · Zero Sample Data Fallback'}
                 </span>
                 <h1 className="text-lg sm:text-xl font-display font-bold text-slate-900 mt-1.5">
                   {status === 'no_membership' &&
@@ -259,8 +265,7 @@ export const LiveOnboardingPage: React.FC<LiveOnboardingPageProps> = ({
                   {status === 'no_membership' &&
                     'You are signed in with a real Firebase account, but no business or shop membership record exists for your account in Cloud Firestore yet. Demo data has been blocked.'}
                   {status === 'suspended' &&
-                    (errorMessage ||
-                      'Your user profile or business is currently suspended.')}
+                    'Your account or business access is currently suspended. Please contact your business administrator or manager for assistance.'}
                   {status === 'error' &&
                     (errorMessage ||
                       'A Firestore query error occurred. The application did not fall back to sample data.')}
@@ -291,27 +296,44 @@ export const LiveOnboardingPage: React.FC<LiveOnboardingPageProps> = ({
             </div>
           </div>
 
-          {/* Authenticated Identity & Database Details */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100 text-xs">
-            <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
-              <span className="text-slate-500 block">Authenticated Email</span>
-              <span className="font-semibold text-slate-900 break-all">
-                {email}
-              </span>
+          {/* Authenticated Identity & Database Details (Hidden on suspended accounts to avoid exposing backend details) */}
+          {status === 'suspended' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100 text-xs">
+              <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
+                <span className="text-slate-500 block">Account Email</span>
+                <span className="font-semibold text-slate-900 break-all">
+                  {email}
+                </span>
+              </div>
+              <div className="bg-rose-50 rounded-lg p-3 border border-rose-200/80">
+                <span className="text-rose-600 block">Account Status</span>
+                <span className="font-semibold text-rose-800">
+                  Suspended — Contact Administrator
+                </span>
+              </div>
             </div>
-            <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
-              <span className="text-slate-500 block">Firebase Auth UID</span>
-              <code className="font-mono text-[11px] font-semibold text-slate-900 break-all">
-                {uid}
-              </code>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100 text-xs">
+              <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
+                <span className="text-slate-500 block">Authenticated Email</span>
+                <span className="font-semibold text-slate-900 break-all">
+                  {email}
+                </span>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
+                <span className="text-slate-500 block">Firebase Auth UID</span>
+                <code className="font-mono text-[11px] font-semibold text-slate-900 break-all">
+                  {uid}
+                </code>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
+                <span className="text-slate-500 block">Firestore Database</span>
+                <code className="font-mono text-[11px] font-semibold text-emerald-800 break-all">
+                  {firebaseConfig.firestoreDatabaseId}
+                </code>
+              </div>
             </div>
-            <div className="bg-slate-50 rounded-lg p-3 border border-slate-200/80">
-              <span className="text-slate-500 block">Firestore Database</span>
-              <code className="font-mono text-[11px] font-semibold text-emerald-800 break-all">
-                {firebaseConfig.firestoreDatabaseId}
-              </code>
-            </div>
-          </div>
+          )}
 
           {/* Required Firestore Records Diagnostics */}
           {requiredProvisioningSteps.length > 0 && (

@@ -2718,7 +2718,7 @@ export const PosPage: React.FC<PosPageProps> = ({
           </div>
 
           {/* Dispatch to Table Banner (Option 1: Immediate Stock Deduction) */}
-          {dispatchAnalysis.hasUndispatchedItems && (
+          {isTableTabsEnabled && dispatchAnalysis.hasUndispatchedItems && (
             <div className="px-4 py-2.5 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-200 flex items-center justify-between gap-2">
               <div className="text-xs text-indigo-950">
                 <div className="flex items-center gap-1.5 font-bold">
@@ -2801,12 +2801,12 @@ export const PosPage: React.FC<PosPageProps> = ({
                           {formatCurrency(item.product.sellingPrice, symbol)} ×{' '}
                           {item.quantity} {item.product.unit}
                         </span>
-                        {dispatched > 0 && (
+                        {isTableTabsEnabled && dispatched > 0 && (
                           <span className="px-1.5 py-0.2 rounded text-[10px] font-sans font-bold bg-emerald-100 text-emerald-800">
                             ✓ {dispatched} Dispatched
                           </span>
                         )}
-                        {pending > 0 && (
+                        {isTableTabsEnabled && pending > 0 && (
                           <span className="px-1.5 py-0.2 rounded text-[10px] font-sans font-semibold bg-amber-100 text-amber-800">
                             ⏳ {pending} Pending
                           </span>
@@ -2959,7 +2959,7 @@ export const PosPage: React.FC<PosPageProps> = ({
             </div>
 
             {/* Interim Bill (Pre-Check Slip) for Customer Table Verification */}
-            {dispatchAnalysis.canPrintInterimBill && (
+            {isTableTabsEnabled && dispatchAnalysis.canPrintInterimBill && (
               <div className="pt-2">
                 <button
                   type="button"

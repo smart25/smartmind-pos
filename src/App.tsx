@@ -115,6 +115,7 @@ import { PosPage } from './pages/PosPage';
 import { ProductsInventoryPage } from './pages/ProductsInventoryPage';
 import { ProductTransferPage } from './pages/ProductTransferPage';
 import { ExpiringProductsPage } from './pages/ExpiringProductsPage';
+import { GenerateBarcodePage } from './pages/GenerateBarcodePage';
 import { SalesHistoryPage } from './pages/SalesHistoryPage';
 import { SalesSummaryPage } from './pages/SalesSummaryPage';
 import { DebtBookPage } from './pages/DebtBookPage';
@@ -674,6 +675,7 @@ const safeActiveView = useMemo<AppView>(() => {
       'inventory',
       'product_transfer',
       'expiring_products',
+      'generate_barcode',
       'invoices',
       'sales',
       'sales_summary',
@@ -1815,7 +1817,7 @@ const activeShop = useMemo(() => {
     if (res.status !== 'ready' || !res.user || !res.dataset) {
       // If we are already on the live_onboarding screen, do not clear state or cause a remount
       setDataMode(res.dataMode);
-      setLiveErrorMessage(res.errorMessage || null);
+      setLiveErrorMessage(res.status === 'suspended' ? null : (res.errorMessage || null));
       if (sessionStage !== 'live_onboarding') {
         clearInMemoryWorkspaceState();
         setSessionStage('live_onboarding');
@@ -3363,6 +3365,18 @@ useEffect(() => {
           );
         });
     }
+  };
+
+  const handleDeleteStaff = async (userId: string): Promise<void> => {
+    const targetUser = users.find((u) => u.id === userId);
+    if (!targetUser || targetUser.role === 'platform_admin' || targetUser.id === currentUser.id) {
+      throw new Error('Cannot delete your own account or a Platform Administrator.');
+    }
+    if (dataMode !== 'demo' && liveDataService) {
+      await liveDataService.deleteUserProfile(userId);
+    }
+    setUsers((prev) => prev.filter((u) => u.id !== userId));
+    setShopAssignments((prev) => prev.filter((a) => a.userId !== userId));
   };
 
   const handleUpdateUserPermissions = (
@@ -5593,6 +5607,7 @@ useEffect(() => {
               setShopAssignments((prev) => [...prev, ...newAssignments]);
               return createdUser;
             }}
+            onDeleteUser={handleDeleteStaff}
             onLinkUserFirebaseUid={async (targetUser, newFirebaseUid, reason) => {
               const cleanUid = newFirebaseUid.trim();
               if (!cleanUid || cleanUid.length < 5) {
@@ -5855,6 +5870,16 @@ useEffect(() => {
               />
             )}
 
+            {safeActiveView === 'generate_barcode' && (
+              <GenerateBarcodePage
+                key={`generate-barcode-${activeShop.id}`}
+                business={activeBusiness}
+                shop={activeShop}
+                shopProducts={activeShopProducts}
+                onSaveProduct={handleSaveProduct}
+              />
+            )}
+
             {safeActiveView === 'invoices' && (
               <InvoicesPage
                 key={activeShop.id}
@@ -5964,6 +5989,7 @@ useEffect(() => {
                 onCreateStaff={handleCreateStaff}
                 onUpdateStaff={handleUpdateStaff}
                 onToggleStaffStatus={handleToggleStaffStatus}
+                onDeleteStaff={handleDeleteStaff}
                 onResetUserPassword={handleResetUserPassword}
                 onCreateCustomRole={handleCreateCustomRole}
                 onUpdateCustomRole={handleUpdateCustomRole}

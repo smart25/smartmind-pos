@@ -22,6 +22,7 @@ import {
   CalendarClock,
   Sparkles,
   RefreshCw,
+  Barcode,
 } from 'lucide-react';
 import { AppView, Shop, User } from '../../types/pos';
 import { canUserAccessView } from '../../utils/posCalculations';
@@ -78,7 +79,8 @@ const NAV_ITEMS: NavItemConfig[] = [
     isVisible: (u) =>
       canUserAccessView(u, 'inventory') ||
       canUserAccessView(u, 'product_transfer') ||
-      canUserAccessView(u, 'expiring_products'),
+      canUserAccessView(u, 'expiring_products') ||
+      canUserAccessView(u, 'generate_barcode'),
     subItems: [
       {
         id: 'inventory',
@@ -98,6 +100,14 @@ const NAV_ITEMS: NavItemConfig[] = [
         icon: CalendarClock,
         isVisible: (u) =>
           canUserAccessView(u, 'expiring_products') ||
+          canUserAccessView(u, 'inventory'),
+      },
+      {
+        id: 'generate_barcode',
+        label: 'Generate Barcode',
+        icon: Barcode,
+        isVisible: (u) =>
+          canUserAccessView(u, 'generate_barcode') ||
           canUserAccessView(u, 'inventory'),
       },
     ],
@@ -208,7 +218,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           return {
             ...item,
             subItems: item.subItems?.filter((sub) =>
-              ['inventory', 'product_transfer', 'expiring_products'].includes(sub.id)
+              ['inventory', 'product_transfer', 'expiring_products', 'generate_barcode'].includes(sub.id)
             ),
           };
         }

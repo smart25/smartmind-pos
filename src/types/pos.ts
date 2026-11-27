@@ -582,6 +582,7 @@ export type AppView =
   | 'inventory'
   | 'product_transfer'
   | 'expiring_products'
+  | 'generate_barcode'
   | 'invoices'
   | 'sales'
   | 'sales_summary'

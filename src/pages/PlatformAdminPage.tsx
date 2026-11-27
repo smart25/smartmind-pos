@@ -219,6 +219,7 @@ export interface PlatformAdminPageProps {
     firebaseUid?: string;
   }) => Promise<User> | User;
   onLinkUserFirebaseUid?: (user: User, newUid: string, reason: string) => Promise<void>;
+  onDeleteUser?: (userId: string) => Promise<void> | void;
   onSwitchDemoUser: (userId: string) => void;
   onSignOut: () => void;
   onCreateCustomRole?: (input: CreateCustomRoleInput) => CustomRole;
@@ -264,6 +265,7 @@ export const PlatformAdminPage: React.FC<PlatformAdminPageProps> = ({
   onUpdateUserRoleAndShops,
   onCreateUser,
   onLinkUserFirebaseUid,
+  onDeleteUser,
   onCreateShop,
   onUpdateShop,
   onUpdateSubscription,
@@ -4465,6 +4467,34 @@ if (!deleteResult) {
                             >
                               {u.status === 'active' ? 'Disable' : 'Enable'}
                             </button>
+
+                            {onDeleteUser && u.role !== 'platform_admin' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const confirmed = window.confirm(
+                                    `Permanently delete user "${u.fullName || u.email}" (${u.email}) from the system? This cannot be undone.`
+                                  );
+                                  if (!confirmed) return;
+                                  try {
+                                    await onDeleteUser(u.id);
+                                    showFeedback(
+                                      'success',
+                                      `User "${u.fullName || u.email}" permanently deleted.`
+                                    );
+                                  } catch (err: any) {
+                                    showFeedback(
+                                      'error',
+                                      err?.message || 'Failed to delete user.'
+                                    );
+                                  }
+                                }}
+                                className="px-2 py-1 text-xs rounded bg-red-950/70 hover:bg-red-900 text-red-300 border border-red-800/50 cursor-pointer"
+                                title="Permanently delete user"
+                              >
+                                Delete
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
