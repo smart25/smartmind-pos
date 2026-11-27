@@ -241,24 +241,26 @@ export function generateSaleReceiptHtml(options: {
     width: ${rollWidth};
     margin: 0 auto;
     font-family: Arial, 'Segoe UI', Tahoma, sans-serif;
-    font-size: 11px;
-    line-height: 1.25;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.3;
     color: #000;
     background: #fff;
     -webkit-print-color-adjust: exact;
   }
   .center { text-align: center; }
   .right { text-align: right; }
-  .bold { font-weight: bold; }
+  .bold { font-weight: 700; }
   .store-title {
     font-size: 14px;
-    font-weight: bold;
+    font-weight: 800;
     text-transform: uppercase;
     margin-bottom: 2px;
   }
   .store-sub {
-    font-size: 10px;
-    color: #222;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #000;
     margin-bottom: 2px;
   }
   .line {
@@ -547,8 +549,9 @@ export function generateInterimTabBillHtml(options: {
       size: ${paperWidth} auto;
     }
     body {
-      font-family: 'Courier New', Courier, monospace;
+      font-family: Arial, 'Segoe UI', Tahoma, sans-serif;
       font-size: ${paperWidth === '58mm' ? '11px' : '12px'};
+      font-weight: 600;
       line-height: 1.35;
       color: #000;
       background: #fff;
@@ -560,7 +563,7 @@ export function generateInterimTabBillHtml(options: {
     }
     .center { text-align: center; }
     .right { text-align: right; }
-    .bold { font-weight: bold; }
+    .bold { font-weight: 700; }
     .divider {
       border-top: 1px dashed #000;
       margin: 6px 0;
@@ -643,7 +646,7 @@ export function generateInterimTabBillHtml(options: {
           <td class="item-qty bold">${item.quantity}x</td>
           <td class="item-desc">
             <div class="bold">${escapeHtml(item.product.name)}</div>
-            <div style="font-size: 10px; color: #444;">@ ${formatCurrency(item.product.sellingPrice, symbol)} ${isDispatched ? '✓' : '(pending)'}</div>
+            <div style="font-size: 10.5px; font-weight: 600; color: #000;">@ ${formatCurrency(item.product.sellingPrice, symbol)} ${isDispatched ? '✓' : '(pending)'}</div>
           </td>
           <td class="item-amt bold">${formatCurrency(itemLineTotal, symbol)}</td>
         </tr>`;
@@ -676,10 +679,10 @@ export function generateInterimTabBillHtml(options: {
 
   <div class="double-divider"></div>
 
-  <div class="center" style="font-size: 10px;">
+  <div class="center" style="font-size: 10.5px; font-weight: 600; color: #000;">
     <p style="margin: 2px 0;">PLEASE VERIFY ALL ITEMS AT TABLE</p>
-    <p style="margin: 2px 0; font-weight: bold;">PAYMENT DUE UPON SERVICE COMPLETION</p>
-    <p style="margin: 4px 0 0 0; color: #666;">SmartMind POS · Bar &amp; Table Management</p>
+    <p style="margin: 2px 0; font-weight: 700;">PAYMENT DUE UPON SERVICE COMPLETION</p>
+    <p style="margin: 4px 0 0 0; font-weight: 600; color: #000;">SmartMind POS · Bar &amp; Table Management</p>
   </div>
 </body>
 </html>`;
