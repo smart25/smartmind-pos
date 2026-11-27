@@ -3036,17 +3036,17 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
 
                   {hasBarcodeToggle ? (
                     <div className="space-y-2 pt-1.5 border-t border-slate-200">
+                      <input
+                        id="prod-barcode-input"
+                        type="text"
+                        value={formState.barcode}
+                        onChange={(e) =>
+                          setFormState({ ...formState, barcode: e.target.value })
+                        }
+                        placeholder="Scan, enter, or generate barcode"
+                        className="w-full px-2.5 py-1.5 font-mono border border-slate-300 rounded-lg text-xs bg-white"
+                      />
                       <div className="flex gap-1.5">
-                        <input
-                          id="prod-barcode-input"
-                          type="text"
-                          value={formState.barcode}
-                          onChange={(e) =>
-                            setFormState({ ...formState, barcode: e.target.value })
-                          }
-                          placeholder="Scan, enter, or generate barcode"
-                          className="flex-1 min-w-0 px-2.5 py-1.5 font-mono border border-slate-300 rounded-lg text-xs bg-white"
-                        />
                         <button
                           type="button"
                           onClick={() => {
@@ -3058,7 +3058,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                             const newCode = generateUniqueShopBarcode(existingSet);
                             setFormState((prev) => ({ ...prev, barcode: newCode }));
                           }}
-                          className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs flex items-center gap-1 shrink-0 cursor-pointer shadow-xs transition-colors"
+                          className="flex-1 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs flex items-center justify-center gap-1 cursor-pointer shadow-xs transition-colors"
                           title="Generate unique shop barcode"
                         >
                           <Sparkles className="w-3.5 h-3.5" />
@@ -3067,7 +3067,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                         <button
                           type="button"
                           onClick={() => setBarcodeScannerOpen(true)}
-                          className="px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-lg text-xs flex items-center gap-1 shrink-0 cursor-pointer shadow-xs transition-colors"
+                          className="flex-1 px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-lg text-xs flex items-center justify-center gap-1 cursor-pointer shadow-xs transition-colors"
                           title="Open scanner popup"
                         >
                           <Scan className="w-3.5 h-3.5" />

@@ -235,15 +235,51 @@ export function printBarcodeLabels(params: {
 </body>
 </html>`;
 
-  const printWin = window.open('', '_blank', 'width=520,height=640');
-  if (printWin) {
-    printWin.document.open();
-    printWin.document.write(html);
-    printWin.document.close();
-    setTimeout(() => {
-      printWin.focus();
-      printWin.print();
-    }, 250);
+  // Print via a hidden iframe so printing works seamlessly in both
+  // Electron desktop (where window.open is denied by security policy) and web browsers
+  // without triggering popup blockers.
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.style.visibility = 'hidden';
+  document.body.appendChild(iframe);
+
+  const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!iframeDoc || !iframe.contentWindow) {
+    document.body.removeChild(iframe);
+    return false;
   }
+
+  iframeDoc.open();
+  iframeDoc.write(html);
+  iframeDoc.close();
+
+  const cleanup = () => {
+    if (iframe.parentNode) {
+      iframe.parentNode.removeChild(iframe);
+    }
+  };
+
+  setTimeout(() => {
+    try {
+      const win = iframe.contentWindow;
+      if (!win) {
+        cleanup();
+        return;
+      }
+      win.onafterprint = cleanup;
+      win.focus();
+      win.print();
+      // Fallback cleanup in case onafterprint does not fire
+      setTimeout(cleanup, 60_000);
+    } catch {
+      cleanup();
+    }
+  }, 150);
+
   return true;
 }
