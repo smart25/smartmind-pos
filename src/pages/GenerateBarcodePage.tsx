@@ -16,8 +16,10 @@ import { Business, Product, Shop } from '../types/pos';
 import { ProductFormInput } from '../utils/posCalculations';
 import {
   buildCode128SvgMarkup,
+  escapeLabelHtml,
   generateUniqueShopBarcode,
   isProductMissingBarcode,
+  printBarcodeLabels,
 } from '../utils/barcodeGenerator';
 
 interface GenerateBarcodePageProps {
@@ -25,15 +27,6 @@ interface GenerateBarcodePageProps {
   shop: Shop;
   shopProducts: Product[];
   onSaveProduct: (input: ProductFormInput, editingProductId?: string) => void;
-}
-
-function escapeHtml(value: string): string {
-  return (value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function toProductFormInput(product: Product, newBarcode: string): ProductFormInput {
@@ -229,7 +222,7 @@ export const GenerateBarcodePage: React.FC<GenerateBarcodePageProps> = ({
   <g transform="translate(20, 14)">
     ${svgBody.replace(/width="100%"/, 'width="280"')}
   </g>
-  <text x="160" y="98" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">${escapeHtml(code)}</text>
+  <text x="160" y="98" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">${escapeLabelHtml(code)}</text>
 </svg>`;
     const blob = new Blob([fullSvg], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -241,99 +234,12 @@ export const GenerateBarcodePage: React.FC<GenerateBarcodePageProps> = ({
   };
 
   const executePrintLabels = () => {
-    const labelsHtml: string[] = [];
-    for (const { barcode, copies } of printItems) {
-      const code = (barcode || '').trim();
-      if (!code) continue;
-      const svg = buildCode128SvgMarkup(code, {
-        height: labelPaperFormat === 'thermal_58mm' ? 46 : 56,
-        moduleWidth: 2,
-      });
-      for (let c = 0; c < Math.max(1, Math.min(100, copies)); c++) {
-        labelsHtml.push(`
-          <div class="label-card">
-            <div class="barcode-wrap">${svg}</div>
-            <div class="barcode-num">${escapeHtml(code)}</div>
-          </div>
-        `);
-      }
-    }
-
-    if (labelsHtml.length === 0) return;
-
-    const isA4 = labelPaperFormat === 'a4_grid';
-    const rollWidth = labelPaperFormat === 'thermal_58mm' ? '48mm' : '72mm';
-
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Barcode Labels — ${escapeHtml(shop.name)}</title>
-  <style>
-    @page {
-      margin: ${isA4 ? '8mm' : '2mm'};
-      size: ${isA4 ? 'A4 portrait' : 'auto'};
-    }
-    body {
-      margin: 0;
-      padding: 0;
-      background: #ffffff;
-      color: #000000;
-      font-family: Arial, 'Segoe UI', Tahoma, sans-serif;
-      -webkit-print-color-adjust: exact;
-    }
-    .grid {
-      ${
-        isA4
-          ? 'display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;'
-          : `width: ${rollWidth}; margin: 0 auto; display: flex; flex-direction: column; gap: 8px;`
-      }
-    }
-    .label-card {
-      border: 1px dashed #000000;
-      padding: 6px 8px;
-      text-align: center;
-      background: #ffffff;
-      page-break-inside: avoid;
-    }
-    .product-name {
-      font-size: ${labelPaperFormat === 'thermal_58mm' ? '11px' : '12px'};
-      font-weight: 700;
-      color: #000000;
-      margin-bottom: 4px;
-      word-break: break-word;
-    }
-    .barcode-wrap {
-      width: 100%;
-      margin: 2px auto;
-    }
-    .barcode-num {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: ${labelPaperFormat === 'thermal_58mm' ? '11px' : '12px'};
-      font-weight: 700;
-      color: #000000;
-      letter-spacing: 1px;
-      margin-top: 3px;
-    }
-  </style>
-</head>
-<body>
-  <div class="grid">
-    ${labelsHtml.join('')}
-  </div>
-</body>
-</html>`;
-
-    const printWin = window.open('', '_blank', 'width=520,height=640');
-    if (printWin) {
-      printWin.document.open();
-      printWin.document.write(html);
-      printWin.document.close();
-      setTimeout(() => {
-        printWin.focus();
-        printWin.print();
-      }, 250);
-    }
+    const printed = printBarcodeLabels({
+      shopName: shop.name,
+      items: printItems.map((i) => ({ barcode: i.barcode, copies: i.copies })),
+      paperFormat: labelPaperFormat,
+    });
+    if (!printed) return;
     setPrintModalOpen(false);
   };
 

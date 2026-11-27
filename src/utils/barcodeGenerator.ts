@@ -130,3 +130,120 @@ export function isProductMissingBarcode(product: Product): boolean {
   if (b === s && !/^\d{8,14}$/.test(b)) return true;
   return false;
 }
+
+export type BarcodeLabelPaperFormat = 'thermal_80mm' | 'thermal_58mm' | 'a4_grid';
+
+export interface PrintableBarcodeLabelItem {
+  barcode: string;
+  copies: number;
+}
+
+export function escapeLabelHtml(value: string): string {
+  return (value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Opens a clean print window containing scannable Code-128 barcode sticker labels
+ * (barcode graphic + barcode number only, without item name or price).
+ */
+export function printBarcodeLabels(params: {
+  shopName: string;
+  items: PrintableBarcodeLabelItem[];
+  paperFormat: BarcodeLabelPaperFormat;
+}): boolean {
+  const { shopName, items, paperFormat } = params;
+  const labelsHtml: string[] = [];
+
+  for (const item of items) {
+    const code = (item.barcode || '').trim();
+    if (!code) continue;
+    const svg = buildCode128SvgMarkup(code, {
+      height: paperFormat === 'thermal_58mm' ? 38 : 46,
+      moduleWidth: 2,
+    });
+    const safeCopies = Math.max(1, Math.min(100, Math.floor(item.copies || 1)));
+    for (let c = 0; c < safeCopies; c++) {
+      labelsHtml.push(`
+        <div class="label-card">
+          <div class="barcode-wrap">${svg}</div>
+          <div class="barcode-num">${escapeLabelHtml(code)}</div>
+        </div>
+      `);
+    }
+  }
+
+  if (labelsHtml.length === 0) return false;
+
+  const isA4 = paperFormat === 'a4_grid';
+  const rollWidth = paperFormat === 'thermal_58mm' ? '48mm' : '72mm';
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Barcode Labels — ${escapeLabelHtml(shopName)}</title>
+  <style>
+    @page {
+      margin: ${isA4 ? '8mm' : '2mm'};
+      size: ${isA4 ? 'A4 portrait' : 'auto'};
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      color: #000000;
+      font-family: Arial, 'Segoe UI', Tahoma, sans-serif;
+      -webkit-print-color-adjust: exact;
+    }
+    .grid {
+      ${
+        isA4
+          ? 'display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;'
+          : `width: ${rollWidth}; margin: 0 auto; display: flex; flex-direction: column; gap: 8px;`
+      }
+    }
+    .label-card {
+      border: 1px dashed #000000;
+      padding: 6px 8px;
+      text-align: center;
+      background: #ffffff;
+      page-break-inside: avoid;
+    }
+    .barcode-wrap {
+      width: 100%;
+      margin: 2px auto;
+    }
+    .barcode-num {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: ${paperFormat === 'thermal_58mm' ? '11px' : '12px'};
+      font-weight: 700;
+      color: #000000;
+      letter-spacing: 1px;
+      margin-top: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    ${labelsHtml.join('')}
+  </div>
+</body>
+</html>`;
+
+  const printWin = window.open('', '_blank', 'width=520,height=640');
+  if (printWin) {
+    printWin.document.open();
+    printWin.document.write(html);
+    printWin.document.close();
+    setTimeout(() => {
+      printWin.focus();
+      printWin.print();
+    }, 250);
+  }
+  return true;
+}

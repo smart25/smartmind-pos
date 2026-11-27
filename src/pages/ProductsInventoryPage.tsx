@@ -33,8 +33,14 @@ import {
   Layers,
   Scan,
   Barcode,
+  Printer,
 } from 'lucide-react';
 import { BarcodeCaptureModal } from '../components/inventory/BarcodeCaptureModal';
+import {
+  BarcodeLabelPaperFormat,
+  generateUniqueShopBarcode,
+  printBarcodeLabels,
+} from '../utils/barcodeGenerator';
 import {
   downloadInventoryCsvTemplate,
   InventoryCsvParseResult,
@@ -198,6 +204,9 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
   // Barcode Toggle & Capture Modal State
   const [hasBarcodeToggle, setHasBarcodeToggle] = useState<boolean>(false);
   const [barcodeScannerOpen, setBarcodeScannerOpen] = useState<boolean>(false);
+  const [barcodeLabelCopies, setBarcodeLabelCopies] = useState<number>(1);
+  const [barcodePaperFormat, setBarcodePaperFormat] =
+    useState<BarcodeLabelPaperFormat>('thermal_80mm');
 
   // Inline Create Category inside Add/Edit Product Modal
   const [showInlineCategoryForm, setShowInlineCategoryForm] = useState<boolean>(
@@ -592,6 +601,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
   const openAddProductModal = () => {
     setEditingProduct(null);
     setHasBarcodeToggle(false);
+    setBarcodeLabelCopies(1);
     const nextNum = 100 + shopProducts.length + 1;
     setFormState({
       name: '',
@@ -619,6 +629,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
       product.barcode.toLowerCase() !== 'none'
     );
     setHasBarcodeToggle(hasExistingBarcode);
+    setBarcodeLabelCopies(1);
     setFormState({
       name: product.name,
       sku: product.sku,
@@ -3024,7 +3035,7 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                   </div>
 
                   {hasBarcodeToggle ? (
-                    <div className="space-y-1.5 pt-1.5 border-t border-slate-200">
+                    <div className="space-y-2 pt-1.5 border-t border-slate-200">
                       <div className="flex gap-1.5">
                         <input
                           id="prod-barcode-input"
@@ -3033,9 +3044,26 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                           onChange={(e) =>
                             setFormState({ ...formState, barcode: e.target.value })
                           }
-                          placeholder="Scan or enter barcode"
+                          placeholder="Scan, enter, or generate barcode"
                           className="flex-1 min-w-0 px-2.5 py-1.5 font-mono border border-slate-300 rounded-lg text-xs bg-white"
                         />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const existingSet = new Set(
+                              shopProducts
+                                .map((p) => (p.barcode || '').trim())
+                                .filter(Boolean)
+                            );
+                            const newCode = generateUniqueShopBarcode(existingSet);
+                            setFormState((prev) => ({ ...prev, barcode: newCode }));
+                          }}
+                          className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs flex items-center gap-1 shrink-0 cursor-pointer shadow-xs transition-colors"
+                          title="Generate unique shop barcode"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>Generate</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => setBarcodeScannerOpen(true)}
@@ -3047,6 +3075,60 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                         </button>
                       </div>
 
+                      {formState.barcode.trim() && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <label className="text-[10px] font-medium text-slate-600 flex items-center gap-1">
+                            <span>Copies</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={100}
+                              value={barcodeLabelCopies}
+                              onChange={(e) =>
+                                setBarcodeLabelCopies(
+                                  Math.max(1, Math.min(100, Number(e.target.value) || 1))
+                                )
+                              }
+                              className="w-12 px-1.5 py-1 border border-slate-300 rounded bg-white text-[11px] font-mono text-center"
+                            />
+                          </label>
+                          <select
+                            value={barcodePaperFormat}
+                            onChange={(e) =>
+                              setBarcodePaperFormat(
+                                e.target.value as BarcodeLabelPaperFormat
+                              )
+                            }
+                            className="px-1.5 py-1 border border-slate-300 rounded bg-white text-[11px] text-slate-700"
+                            title="Barcode label paper format"
+                          >
+                            <option value="thermal_80mm">80mm Thermal</option>
+                            <option value="thermal_58mm">58mm Thermal</option>
+                            <option value="a4_grid">A4 Sheet</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              printBarcodeLabels({
+                                shopName: shop.name,
+                                items: [
+                                  {
+                                    barcode: formState.barcode.trim(),
+                                    copies: barcodeLabelCopies,
+                                  },
+                                ],
+                                paperFormat: barcodePaperFormat,
+                              })
+                            }
+                            className="ml-auto px-2.5 py-1 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
+                            title="Print barcode sticker label(s)"
+                          >
+                            <Printer className="w-3 h-3" />
+                            <span>Print Label</span>
+                          </button>
+                        </div>
+                      )}
+
                       {existingProductWithBarcode && (
                         <p className="text-[10px] text-amber-700 flex items-center gap-1 font-medium">
                           <AlertTriangle className="w-3 h-3 shrink-0" />
@@ -3055,9 +3137,28 @@ export const ProductsInventoryPage: React.FC<ProductsInventoryPageProps> = ({
                       )}
                     </div>
                   ) : (
-                    <p className="text-[10px] text-slate-500 italic pt-1">
-                      Toggle ON if the item packaging has a barcode to scan.
-                    </p>
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <p className="text-[10px] text-slate-500 italic">
+                        No barcode? Generate one to print &amp; paste on the item.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const existingSet = new Set(
+                            shopProducts
+                              .map((p) => (p.barcode || '').trim())
+                              .filter(Boolean)
+                          );
+                          const newCode = generateUniqueShopBarcode(existingSet);
+                          setHasBarcodeToggle(true);
+                          setFormState((prev) => ({ ...prev, barcode: newCode }));
+                        }}
+                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-[11px] flex items-center gap-1 shrink-0 cursor-pointer shadow-xs transition-colors"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Generate Barcode</span>
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
