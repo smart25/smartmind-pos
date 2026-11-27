@@ -226,11 +226,7 @@ export function canUserAccessView(user: User, view: AppView): boolean {
       );
 
     case 'invoices':
-      return (
-        hasPermission(user, 'manage_invoices') ||
-        hasPermission(user, 'process_sales') ||
-        hasPermission(user, 'manage_products')
-      );
+      return hasPermission(user, 'manage_invoices');
 
     case 'reports':
       return (

@@ -81,6 +81,16 @@ test('canUserAccessView allows authorized roles to access invoices', () => {
 
   assert.equal(canUserAccessView(mockOwner, 'invoices'), true);
   assert.equal(canUserAccessView(mockOwner, 'inventory'), true);
+
+  const cashierWithoutInvoices: User = {
+    ...mockOwner,
+    id: 'usr-2',
+    role: 'cashier',
+    roleLabel: 'Cashier',
+    permissions: ['process_sales'],
+  };
+  assert.equal(canUserAccessView(cashierWithoutInvoices, 'pos'), true);
+  assert.equal(canUserAccessView(cashierWithoutInvoices, 'invoices'), false);
 });
 
 test('formatCurrency formats Naira properly', () => {
