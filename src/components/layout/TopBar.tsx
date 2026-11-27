@@ -97,6 +97,14 @@ const VIEW_TITLES: Record<AppView, { title: string; subtitle: string }> = {
     title: 'Staff & Permission Management',
     subtitle: 'Manage Shop Managers, Cashiers, shop assignments & least-privilege permissions',
   },
+  payroll_employees: {
+    title: 'Payroll — Employees',
+    subtitle: 'Manage employee profiles, start dates, base salaries & bank details',
+  },
+  payroll_payments: {
+    title: 'Payroll — Salary Payments',
+    subtitle: 'Run monthly payroll periods, compute PAYE & commissions, and track salary disbursements',
+  },
   settings: {
     title: 'System & Shop Settings',
     subtitle: 'Business profile, shop parameters, users, terminals & sync configuration',

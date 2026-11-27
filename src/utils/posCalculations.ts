@@ -250,6 +250,8 @@ export function canUserAccessView(user: User, view: AppView): boolean {
       return hasPermission(user, 'manage_shops');
 
     case 'staff':
+    case 'payroll_employees':
+    case 'payroll_payments':
       return hasPermission(user, 'manage_staff');
 
     case 'settings':

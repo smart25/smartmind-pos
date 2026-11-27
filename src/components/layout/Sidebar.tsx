@@ -23,6 +23,8 @@ import {
   Sparkles,
   RefreshCw,
   Barcode,
+  Wallet,
+  Banknote,
 } from 'lucide-react';
 import { AppView, Shop, User } from '../../types/pos';
 import { canUserAccessView } from '../../utils/posCalculations';
@@ -170,6 +172,28 @@ const NAV_ITEMS: NavItemConfig[] = [
     isVisible: (u) => canUserAccessView(u, 'staff'),
   },
   {
+    id: 'payroll_employees',
+    label: 'Payroll',
+    icon: Wallet,
+    isVisible: (u) =>
+      canUserAccessView(u, 'payroll_employees') ||
+      canUserAccessView(u, 'payroll_payments'),
+    subItems: [
+      {
+        id: 'payroll_employees',
+        label: 'Employees',
+        icon: Users,
+        isVisible: (u) => canUserAccessView(u, 'payroll_employees'),
+      },
+      {
+        id: 'payroll_payments',
+        label: 'Salary Payments',
+        icon: Banknote,
+        isVisible: (u) => canUserAccessView(u, 'payroll_payments'),
+      },
+    ],
+  },
+  {
     id: 'settings',
     label: 'Settings',
     icon: Settings,
@@ -229,6 +253,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [openSubMenus, setOpenSubMenus] = useState<Record<string, boolean>>({
     sales: true,
     inventory: true,
+    payroll_employees: true,
   });
 
   const { isUpdateAvailable, latestVersion, openModal, checkForUpdates, isChecking } = useDesktopUpdate();

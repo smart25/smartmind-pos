@@ -591,6 +591,8 @@ export type AppView =
   | 'suppliers'
   | 'shops'
   | 'staff'
+  | 'payroll_employees'
+  | 'payroll_payments'
   | 'settings';
 
 export type PlatformAdminSection =
@@ -678,6 +680,68 @@ export type GlobalSalesDateRange =
   | 'this_month'
   | 'prev_month'
   | 'custom';
+
+export type SalaryType = 'monthly' | 'weekly' | 'daily';
+
+export interface PayrollEmployee {
+  id: string;
+  businessId: string;
+  shopId: string;
+  linkedUserId?: string;
+  fullName: string;
+  phone: string;
+  position: string;
+  startDate: string; // Resumption date (YYYY-MM-DD)
+  salaryType: SalaryType;
+  baseSalary: number;
+  commissionEnabled: boolean;
+  commissionRatePercent?: number;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  includeInPayroll: boolean;
+  enablePayeTax: boolean;
+  payeRatePercent?: number;
+  status: 'active' | 'inactive';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PayrollLineItem {
+  employeeId: string;
+  employeeName: string;
+  position: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  baseSalary: number;
+  commissionBonus: number;
+  otherAllowances: number;
+  taxDeduction: number;
+  otherDeductions: number;
+  netPay: number;
+  paymentStatus: 'pending' | 'paid';
+  paymentMethod?: 'bank_transfer' | 'cash' | 'other';
+  paidAt?: string;
+  note?: string;
+}
+
+export interface PayrollPeriod {
+  id: string;
+  businessId: string;
+  shopId: string;
+  monthKey: string; // YYYY-MM e.g. 2026-11
+  monthLabel: string; // e.g. November 2026
+  status: 'draft' | 'finalized';
+  items: PayrollLineItem[];
+  totalGrossPay: number;
+  totalTaxDeduction: number;
+  totalNetPay: number;
+  createdByUserId: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 
 

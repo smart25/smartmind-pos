@@ -22,6 +22,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   setDoc,
   where,
@@ -77,6 +78,8 @@ import {
   DebtCustomer,
   DebtTransaction,
   Invoice,
+  PayrollEmployee,
+  PayrollPeriod,
   PermissionKey,
   PlatformAdminAuditLog,
   Product,
@@ -1424,6 +1427,35 @@ export interface LiveCloudStoreProvider {
   getShop(businessId: string, shopId: string): Promise<Shop | null>;
   listShopProducts(businessId: string, shopId: string): Promise<Product[]>;
   listShopSales(businessId: string, shopId: string): Promise<SaleTransaction[]>;
+  subscribeToShopProducts?(
+    businessId: string,
+    shopId: string,
+    onUpdate: (products: Product[]) => void
+  ): () => void;
+  subscribeToShopDoc?(
+    businessId: string,
+    shopId: string,
+    onUpdate: (shop: Shop) => void
+  ): () => void;
+  subscribeToShopSales?(
+    businessId: string,
+    shopId: string,
+    onUpdate: (sales: SaleTransaction[]) => void
+  ): () => void;
+  savePayrollEmployee?(employee: PayrollEmployee): Promise<void>;
+  deletePayrollEmployee?(businessId: string, employeeId: string): Promise<void>;
+  subscribeToPayrollEmployees?(
+    businessId: string,
+    shopId: string,
+    onUpdate: (employees: PayrollEmployee[]) => void
+  ): () => void;
+  savePayrollPeriod?(period: PayrollPeriod): Promise<void>;
+  deletePayrollPeriod?(businessId: string, periodId: string): Promise<void>;
+  subscribeToPayrollPeriods?(
+    businessId: string,
+    shopId: string,
+    onUpdate: (periods: PayrollPeriod[]) => void
+  ): () => void;
   saveUserProfile(user: User): Promise<void>;
   deleteUserProfile?(userId: string): Promise<void>;
   saveBusiness(business: Business): Promise<void>;
@@ -1659,59 +1691,193 @@ export class FirestoreCloudStoreProvider implements LiveCloudStoreProvider {
     };
   }
 
+  private mapDocToProduct(
+    businessId: string,
+    shopId: string,
+    docId: string,
+    d: Record<string, any>
+  ): Product {
+    return {
+      id: d.id || docId,
+      shopId: d.shopId || shopId,
+      businessId: d.businessId || businessId,
+      categoryId: d.categoryId || `cat-${shopId}-general`,
+      categoryName: d.categoryName || 'General Merchandise',
+      sku: d.sku,
+      barcode: d.barcode || d.sku,
+      name: d.name,
+      unit: d.unit || 'Unit',
+      costPrice:
+        typeof d.costPrice === 'number' && d.costPrice > 0
+          ? d.costPrice
+          : typeof d.costPriceKobo === 'number' && d.costPriceKobo > 0
+          ? fromMinorUnits(d.costPriceKobo)
+          : typeof d.cost_price === 'number' && d.cost_price > 0
+          ? d.cost_price
+          : typeof d.cost_price_kobo === 'number' && d.cost_price_kobo > 0
+          ? fromMinorUnits(d.cost_price_kobo)
+          : typeof d.costPrice === 'number'
+          ? d.costPrice
+          : typeof d.costPriceKobo === 'number'
+          ? fromMinorUnits(d.costPriceKobo)
+          : 0,
+      sellingPrice:
+        typeof d.sellingPrice === 'number' && d.sellingPrice > 0
+          ? d.sellingPrice
+          : typeof d.sellingPriceKobo === 'number' && d.sellingPriceKobo > 0
+          ? fromMinorUnits(d.sellingPriceKobo)
+          : typeof d.selling_price === 'number' && d.selling_price > 0
+          ? d.selling_price
+          : typeof d.selling_price_kobo === 'number' && d.selling_price_kobo > 0
+          ? fromMinorUnits(d.selling_price_kobo)
+          : typeof d.sellingPrice === 'number'
+          ? d.sellingPrice
+          : typeof d.sellingPriceKobo === 'number'
+          ? fromMinorUnits(d.sellingPriceKobo)
+          : 0,
+      stockQuantity: Number(d.stockQuantity || 0),
+      reorderLevel: Number(d.reorderLevel || 0),
+      hasExpiry: Boolean(d.hasExpiry),
+      expiryDate: d.expiryDate || null,
+      isActive: d.isActive !== false,
+      createdAt: d.createdAt || d.updatedAt || new Date().toISOString(),
+      updatedAt: d.updatedAt || new Date().toISOString(),
+    };
+  }
+
   async listShopProducts(businessId: string, shopId: string): Promise<Product[]> {
     const snap = await getDocs(
       collection(db, 'businesses', businessId, 'shops', shopId, 'products')
     );
-    return snap.docs.map((docSnap) => {
-      const d = docSnap.data();
-      return {
-        id: d.id || docSnap.id,
-        shopId: d.shopId || shopId,
-        businessId: d.businessId || businessId,
-        categoryId: d.categoryId || `cat-${shopId}-general`,
-        categoryName: d.categoryName || 'General Merchandise',
-        sku: d.sku,
-        barcode: d.barcode || d.sku,
-        name: d.name,
-        unit: d.unit || 'Unit',
-        costPrice:
-          typeof d.costPrice === 'number' && d.costPrice > 0
-            ? d.costPrice
-            : typeof d.costPriceKobo === 'number' && d.costPriceKobo > 0
-            ? fromMinorUnits(d.costPriceKobo)
-            : typeof d.cost_price === 'number' && d.cost_price > 0
-            ? d.cost_price
-            : typeof d.cost_price_kobo === 'number' && d.cost_price_kobo > 0
-            ? fromMinorUnits(d.cost_price_kobo)
-            : typeof d.costPrice === 'number'
-            ? d.costPrice
-            : typeof d.costPriceKobo === 'number'
-            ? fromMinorUnits(d.costPriceKobo)
-            : 0,
-        sellingPrice:
-          typeof d.sellingPrice === 'number' && d.sellingPrice > 0
-            ? d.sellingPrice
-            : typeof d.sellingPriceKobo === 'number' && d.sellingPriceKobo > 0
-            ? fromMinorUnits(d.sellingPriceKobo)
-            : typeof d.selling_price === 'number' && d.selling_price > 0
-            ? d.selling_price
-            : typeof d.selling_price_kobo === 'number' && d.selling_price_kobo > 0
-            ? fromMinorUnits(d.selling_price_kobo)
-            : typeof d.sellingPrice === 'number'
-            ? d.sellingPrice
-            : typeof d.sellingPriceKobo === 'number'
-            ? fromMinorUnits(d.sellingPriceKobo)
-            : 0,
-        stockQuantity: Number(d.stockQuantity || 0),
-        reorderLevel: Number(d.reorderLevel || 0),
-        hasExpiry: Boolean(d.hasExpiry),
-        expiryDate: d.expiryDate || null,
-        isActive: d.isActive !== false,
-        createdAt: d.createdAt || d.updatedAt || new Date().toISOString(),
-        updatedAt: d.updatedAt || new Date().toISOString(),
-      };
-    });
+    return snap.docs.map((docSnap) =>
+      this.mapDocToProduct(businessId, shopId, docSnap.id, docSnap.data())
+    );
+  }
+
+  subscribeToShopProducts(
+    businessId: string,
+    shopId: string,
+    onUpdate: (products: Product[]) => void
+  ): () => void {
+    const colRef = collection(db, 'businesses', businessId, 'shops', shopId, 'products');
+    return onSnapshot(
+      colRef,
+      (snap) => {
+        const mapped = snap.docs
+          .map((docSnap) =>
+            this.mapDocToProduct(businessId, shopId, docSnap.id, docSnap.data())
+          )
+          .filter((p) => !isKnownDemoRecord(p));
+        onUpdate(mapped);
+      },
+      (err) => {
+        console.warn(`[LiveSync] Product snapshot error for shop ${shopId}:`, err);
+      }
+    );
+  }
+
+  subscribeToShopDoc(
+    businessId: string,
+    shopId: string,
+    onUpdate: (shop: Shop) => void
+  ): () => void {
+    const shopRef = doc(db, 'businesses', businessId, 'shops', shopId);
+    return onSnapshot(
+      shopRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const mapped = this.mapDocToShop(docSnap.id, docSnap.data());
+          if (!isKnownDemoRecord(mapped)) {
+            onUpdate(mapped);
+          }
+        }
+      },
+      (err) => {
+        console.warn(`[LiveSync] Shop snapshot error for shop ${shopId}:`, err);
+      }
+    );
+  }
+
+  subscribeToShopSales(
+    businessId: string,
+    shopId: string,
+    onUpdate: (sales: SaleTransaction[]) => void
+  ): () => void {
+    const colRef = collection(db, 'businesses', businessId, 'shops', shopId, 'sales');
+    return onSnapshot(
+      colRef,
+      async (snap) => {
+        try {
+          const sales = await this.listShopSales(businessId, shopId);
+          onUpdate(sales.filter((s) => !isKnownDemoRecord(s)));
+        } catch (err) {
+          console.warn(`[LiveSync] Sales snapshot refresh error for shop ${shopId}:`, err);
+        }
+      },
+      (err) => {
+        console.warn(`[LiveSync] Sales snapshot listener error for shop ${shopId}:`, err);
+      }
+    );
+  }
+
+  async savePayrollEmployee(employee: PayrollEmployee): Promise<void> {
+    const ref = doc(db, 'businesses', employee.businessId, 'employees', employee.id);
+    await setDoc(ref, employee);
+  }
+
+  async deletePayrollEmployee(businessId: string, employeeId: string): Promise<void> {
+    await deleteDoc(doc(db, 'businesses', businessId, 'employees', employeeId));
+  }
+
+  subscribeToPayrollEmployees(
+    businessId: string,
+    shopId: string,
+    onUpdate: (employees: PayrollEmployee[]) => void
+  ): () => void {
+    const q = query(
+      collection(db, 'businesses', businessId, 'employees'),
+      where('shopId', '==', shopId)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map((d) => d.data() as PayrollEmployee);
+        onUpdate(list);
+      },
+      (err) => {
+        console.warn(`[LiveSync] Payroll employees snapshot error for shop ${shopId}:`, err);
+      }
+    );
+  }
+
+  async savePayrollPeriod(period: PayrollPeriod): Promise<void> {
+    const ref = doc(db, 'businesses', period.businessId, 'payroll_periods', period.id);
+    await setDoc(ref, period);
+  }
+
+  async deletePayrollPeriod(businessId: string, periodId: string): Promise<void> {
+    await deleteDoc(doc(db, 'businesses', businessId, 'payroll_periods', periodId));
+  }
+
+  subscribeToPayrollPeriods(
+    businessId: string,
+    shopId: string,
+    onUpdate: (periods: PayrollPeriod[]) => void
+  ): () => void {
+    const q = query(
+      collection(db, 'businesses', businessId, 'payroll_periods'),
+      where('shopId', '==', shopId)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map((d) => d.data() as PayrollPeriod);
+        onUpdate(list);
+      },
+      (err) => {
+        console.warn(`[LiveSync] Payroll periods snapshot error for shop ${shopId}:`, err);
+      }
+    );
   }
 
   async listShopSales(
@@ -5312,6 +5478,109 @@ export class LiveFirestoreDataService {
     if (typeof this.cloudProvider.deleteUserProfile === 'function') {
       await this.cloudProvider.deleteUserProfile(userId);
     }
+  }
+
+  /**
+   * Subscribes to real-time Cloud Firestore updates for the active shop's products,
+   * shop configuration (e.g. Bar Mode, VAT), and sales transactions so that any
+   * stock adjustments or sales on another terminal sync automatically without manual refresh.
+   */
+  subscribeToActiveShopLiveUpdates(params: {
+    businessId: string;
+    shopId: string;
+    onProductsUpdated: (products: Product[]) => void;
+    onShopUpdated?: (shop: Shop) => void;
+    onSalesUpdated?: (sales: SaleTransaction[]) => void;
+  }): () => void {
+    const unsubs: Array<() => void> = [];
+    if (typeof this.cloudProvider.subscribeToShopProducts === 'function') {
+      unsubs.push(
+        this.cloudProvider.subscribeToShopProducts(
+          params.businessId,
+          params.shopId,
+          params.onProductsUpdated
+        )
+      );
+    }
+    if (
+      params.onShopUpdated &&
+      typeof this.cloudProvider.subscribeToShopDoc === 'function'
+    ) {
+      unsubs.push(
+        this.cloudProvider.subscribeToShopDoc(
+          params.businessId,
+          params.shopId,
+          params.onShopUpdated
+        )
+      );
+    }
+    if (
+      params.onSalesUpdated &&
+      typeof this.cloudProvider.subscribeToShopSales === 'function'
+    ) {
+      unsubs.push(
+        this.cloudProvider.subscribeToShopSales(
+          params.businessId,
+          params.shopId,
+          params.onSalesUpdated
+        )
+      );
+    }
+    return () => {
+      for (const unsub of unsubs) {
+        try {
+          unsub();
+        } catch {
+          // ignore unsubscribe cleanup errors
+        }
+      }
+    };
+  }
+
+  async savePayrollEmployee(employee: PayrollEmployee): Promise<void> {
+    if (typeof this.cloudProvider.savePayrollEmployee === 'function') {
+      await this.cloudProvider.savePayrollEmployee(employee);
+    }
+  }
+
+  async deletePayrollEmployee(businessId: string, employeeId: string): Promise<void> {
+    if (typeof this.cloudProvider.deletePayrollEmployee === 'function') {
+      await this.cloudProvider.deletePayrollEmployee(businessId, employeeId);
+    }
+  }
+
+  subscribeToPayrollEmployees(
+    businessId: string,
+    shopId: string,
+    onUpdate: (employees: PayrollEmployee[]) => void
+  ): () => void {
+    if (typeof this.cloudProvider.subscribeToPayrollEmployees === 'function') {
+      return this.cloudProvider.subscribeToPayrollEmployees(businessId, shopId, onUpdate);
+    }
+    return () => {};
+  }
+
+  async savePayrollPeriod(period: PayrollPeriod): Promise<void> {
+    if (typeof this.cloudProvider.savePayrollPeriod === 'function') {
+      await this.cloudProvider.savePayrollPeriod(period);
+    }
+  }
+
+  async deletePayrollPeriod(businessId: string, periodId: string): Promise<void> {
+    if (typeof this.cloudProvider.deletePayrollPeriod === 'function') {
+      await this.cloudProvider.deletePayrollPeriod(businessId, periodId);
+    }
+  }
+
+  subscribeToPayrollPeriods(
+    businessId: string,
+    shopId: string,
+    onUpdate: (periods: PayrollPeriod[]) => void
+  ): () => void {
+    if (typeof this.cloudProvider.subscribeToPayrollPeriods === 'function') {
+      return this.cloudProvider.subscribeToPayrollPeriods(businessId, shopId, onUpdate);
+    }
+    return () => {};
   }
 
   async persistLiveProduct(

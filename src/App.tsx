@@ -20,6 +20,8 @@ import {
   InvoicePaymentRecord,
   InvoiceStatus,
   PaymentMethod,
+  PayrollEmployee,
+  PayrollPeriod,
   PermissionKey,
   Product,
   ProductCategory,
@@ -124,6 +126,8 @@ import { ReportsPage } from './pages/ReportsPage';
 import { SuppliersPage } from './pages/SuppliersPage';
 import { ShopsManagementPage } from './pages/ShopsManagementPage';
 import { StaffManagementPage } from './pages/StaffManagementPage';
+import { PayrollEmployeesPage } from './pages/PayrollEmployeesPage';
+import { PayrollPaymentsPage } from './pages/PayrollPaymentsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { getDatabaseAdapter } from './db';
 import { SaleFinalizationService } from './services/saleFinalizationService';
@@ -413,6 +417,8 @@ export default function App() {
     [dbAdapter]
   );
 
+  const [payrollEmployees, setPayrollEmployees] = useState<PayrollEmployee[]>([]);
+  const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>([]);
   const [liveResolution, setLiveResolution] =
     useState<LiveSessionResolutionResult | null>(() => {
       if (dataMode === 'demo' || !persistedLiveMeta) return null;
@@ -684,6 +690,8 @@ const safeActiveView = useMemo<AppView>(() => {
       'suppliers',
       'shops',
       'staff',
+      'payroll_employees',
+      'payroll_payments',
       'settings',
     ];
 
@@ -1718,6 +1726,78 @@ const activeShop = useMemo(() => {
       void syncPendingSalesWithCloud();
     }
   }, [dataMode, connectivityState, syncPendingSalesWithCloud]);
+
+  // Real-time Cloud Firestore synchronization for the active shop (stock, products, shop settings, sales)
+  useEffect(() => {
+    if (
+      dataMode !== 'live' ||
+      sessionStage !== 'workspace' ||
+      !activeBusiness?.id ||
+      !activeShop?.id ||
+      !liveDataService
+    ) {
+      return;
+    }
+
+    const bizId = activeBusiness.id;
+    const shopId = activeShop.id;
+
+    const unsubscribe = liveDataService.subscribeToActiveShopLiveUpdates({
+      businessId: bizId,
+      shopId,
+      onProductsUpdated: (liveShopProducts) => {
+        setProducts((prev) => [
+          ...prev.filter((p) => p.shopId !== shopId),
+          ...liveShopProducts,
+        ]);
+      },
+      onShopUpdated: (liveShop) => {
+        setShops((prev) =>
+          prev.map((s) => (s.id === liveShop.id ? { ...s, ...liveShop } : s))
+        );
+      },
+      onSalesUpdated: (liveShopSales) => {
+        setSales((prev) => {
+          const otherShopSales = prev.filter((s) => s.shopId !== shopId);
+          const localPendingForShop = prev.filter(
+            (s) =>
+              s.shopId === shopId &&
+              s.syncStatus !== 'synced' &&
+              !liveShopSales.some((ls) => ls.id === s.id)
+          );
+          return [...otherShopSales, ...localPendingForShop, ...liveShopSales];
+        });
+      },
+    });
+
+    const unsubPayrollEmployees = liveDataService.subscribeToPayrollEmployees(
+      bizId,
+      shopId,
+      (liveEmps) => {
+        setPayrollEmployees((prev) => [
+          ...prev.filter((e) => e.shopId !== shopId),
+          ...liveEmps,
+        ]);
+      }
+    );
+
+    const unsubPayrollPeriods = liveDataService.subscribeToPayrollPeriods(
+      bizId,
+      shopId,
+      (livePeriods) => {
+        setPayrollPeriods((prev) => [
+          ...prev.filter((p) => p.shopId !== shopId),
+          ...livePeriods,
+        ]);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+      unsubPayrollEmployees();
+      unsubPayrollPeriods();
+    };
+  }, [dataMode, sessionStage, activeBusiness?.id, activeShop?.id]);
 
   // Listen to browser network online / offline events and run periodic auto-sync & auto-reconnect
   useEffect(() => {
@@ -3377,6 +3457,40 @@ useEffect(() => {
     }
     setUsers((prev) => prev.filter((u) => u.id !== userId));
     setShopAssignments((prev) => prev.filter((a) => a.userId !== userId));
+  };
+
+  const handleSavePayrollEmployee = async (employee: PayrollEmployee): Promise<void> => {
+    setPayrollEmployees((prev) => {
+      const exists = prev.some((e) => e.id === employee.id);
+      return exists ? prev.map((e) => (e.id === employee.id ? employee : e)) : [...prev, employee];
+    });
+    if (dataMode !== 'demo' && liveDataService) {
+      await liveDataService.savePayrollEmployee(employee);
+    }
+  };
+
+  const handleDeletePayrollEmployee = async (employeeId: string): Promise<void> => {
+    setPayrollEmployees((prev) => prev.filter((e) => e.id !== employeeId));
+    if (dataMode !== 'demo' && liveDataService && activeBusiness?.id) {
+      await liveDataService.deletePayrollEmployee(activeBusiness.id, employeeId);
+    }
+  };
+
+  const handleSavePayrollPeriod = async (period: PayrollPeriod): Promise<void> => {
+    setPayrollPeriods((prev) => {
+      const exists = prev.some((p) => p.id === period.id);
+      return exists ? prev.map((p) => (p.id === period.id ? period : p)) : [...prev, period];
+    });
+    if (dataMode !== 'demo' && liveDataService) {
+      await liveDataService.savePayrollPeriod(period);
+    }
+  };
+
+  const handleDeletePayrollPeriod = async (periodId: string): Promise<void> => {
+    setPayrollPeriods((prev) => prev.filter((p) => p.id !== periodId));
+    if (dataMode !== 'demo' && liveDataService && activeBusiness?.id) {
+      await liveDataService.deletePayrollPeriod(activeBusiness.id, periodId);
+    }
   };
 
   const handleUpdateUserPermissions = (
@@ -5994,6 +6108,30 @@ useEffect(() => {
                 onCreateCustomRole={handleCreateCustomRole}
                 onUpdateCustomRole={handleUpdateCustomRole}
                 onDeleteCustomRole={handleDeleteCustomRole}
+              />
+            )}
+
+            {safeActiveView === 'payroll_employees' && (
+              <PayrollEmployeesPage
+                business={activeBusiness}
+                shop={activeShop}
+                businessUsers={businessUsers}
+                employees={payrollEmployees}
+                onSaveEmployee={handleSavePayrollEmployee}
+                onDeleteEmployee={handleDeletePayrollEmployee}
+              />
+            )}
+
+            {safeActiveView === 'payroll_payments' && (
+              <PayrollPaymentsPage
+                business={activeBusiness}
+                shop={activeShop}
+                currentUser={currentUser}
+                employees={payrollEmployees}
+                payrollPeriods={payrollPeriods}
+                onSavePeriod={handleSavePayrollPeriod}
+                onDeletePeriod={handleDeletePayrollPeriod}
+                onNavigateToEmployees={() => setActiveView('payroll_employees')}
               />
             )}
 

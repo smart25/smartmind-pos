@@ -959,6 +959,38 @@ service cloud.firestore {
         );
         allow delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId);
       }
+
+      // 18. Payroll Employees (/businesses/{businessId}/employees/{employeeId})
+      match /employees/{employeeId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId &&
+          ('permissions' in getUserProfile()) &&
+          'manage_staff' in getUserProfile().permissions
+        );
+        allow create, update, delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId &&
+          ('permissions' in getUserProfile()) &&
+          'manage_staff' in getUserProfile().permissions
+        );
+      }
+
+      // 19. Payroll Periods (/businesses/{businessId}/payroll_periods/{periodId})
+      match /payroll_periods/{periodId} {
+        allow get, list: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId &&
+          ('permissions' in getUserProfile()) &&
+          'manage_staff' in getUserProfile().permissions
+        );
+        allow create, update, delete: if isPlatformAdmin() || isBusinessOwnerOf(businessId) || (
+          hasActiveProfile() &&
+          getUserProfile().businessId == businessId &&
+          ('permissions' in getUserProfile()) &&
+          'manage_staff' in getUserProfile().permissions
+        );
+      }
     }
 
     // Default Deny
