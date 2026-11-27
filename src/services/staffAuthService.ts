@@ -6,14 +6,8 @@
  * requiring email verification links.
  */
 
-import { initializeApp, deleteApp } from 'firebase/app';
-import {
-  getAuth,
-  createUserWithEmailAndPassword,
-  updateProfile,
-  sendPasswordResetEmail,
-} from 'firebase/auth';
-import { auth, firebaseConfig, isFirebaseConfigured } from '../firebase';
+import { sendPasswordResetEmail } from 'firebase/auth';
+import { auth } from '../firebase';
 
 export interface ProvisionStaffAuthInput {
   email: string;
@@ -84,50 +78,10 @@ export async function provisionStaffAccount(
     }
   }
 
-  // 2. Direct client-side background Firebase Auth provisioning (works in Electron desktop & live production web)
-  if (isFirebaseConfigured && firebaseConfig?.apiKey && firebaseConfig.apiKey !== 'YOUR_FIREBASE_API_KEY') {
-    const tempAppName = `staff-prov-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    let tempApp: any = null;
-    try {
-      tempApp = initializeApp(firebaseConfig, tempAppName);
-      const tempAuth = getAuth(tempApp);
-      const cred = await createUserWithEmailAndPassword(tempAuth, cleanEmail, cleanPassword);
-
-      if (input.fullName.trim() && cred.user) {
-        try {
-          await updateProfile(cred.user, { displayName: input.fullName.trim() });
-        } catch {
-          // Non-blocking display name update
-        }
-      }
-
-      return {
-        uid: cred.user.uid,
-        email: cleanEmail,
-        isExistingAuthUser: false,
-      };
-    } catch (authErr: any) {
-      if (authErr?.code === 'auth/email-already-in-use') {
-        const knownUid = KNOWN_LEGACY_STAFF_UIDS[cleanEmail];
-        return {
-          uid: knownUid,
-          email: cleanEmail,
-          isExistingAuthUser: true,
-        };
-      }
-      console.warn('[StaffAuth] Background Firebase Auth provisioning error:', authErr);
-    } finally {
-      if (tempApp) {
-        try {
-          await deleteApp(tempApp);
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-    }
-  }
-
-  // Graceful fallback to backend Cloud Functions when neither is available
+  // 2. In production web & Electron desktop, let the server-side inviteAuthorizedStaff
+  // Cloud Function create/verify the Firebase Auth account with emailVerified: true
+  // and bind /users/{uid} atomically. Creating via client-side createUserWithEmailAndPassword
+  // leaves emailVerified: false, which is rejected by Firestore rules.
   return { email: cleanEmail };
 }
 

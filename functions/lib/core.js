@@ -324,12 +324,7 @@ exports.DEFAULT_CASHIER_PERMISSIONS = [
     'process_sales',
     'manage_invoices',
 ];
-exports.OWNER_ONLY_PERMISSION_KEYS = new Set([
-    'manage_business_settings',
-    'manage_shops',
-    'manage_staff',
-    'view_business_reports',
-]);
+exports.OWNER_ONLY_PERMISSION_KEYS = new Set([]);
 exports.MANAGER_ONLY_PERMISSION_KEYS = new Set([
     'manage_products',
     'manage_catalogue',
@@ -356,6 +351,10 @@ exports.ALLOWED_CASHIER_PERMISSION_KEYS = new Set([
 exports.ALLOWED_SHOP_MANAGER_PERMISSION_KEYS = new Set([
     ...exports.ALLOWED_CASHIER_PERMISSION_KEYS,
     ...exports.MANAGER_ONLY_PERMISSION_KEYS,
+    'manage_staff',
+    'manage_shops',
+    'manage_business_settings',
+    'view_business_reports',
 ]);
 exports.ALLOWED_STAFF_PERMISSION_KEYS = exports.ALLOWED_SHOP_MANAGER_PERMISSION_KEYS;
 exports.ALL_SUPPORTED_PERMISSION_KEYS = new Set([
@@ -2329,6 +2328,12 @@ async function executeInviteAuthorizedStaff(dbDriver, auth, input, authDirectory
     if (isAuthorizedPlatformAdminEmail(cleanEmail)) {
         throw new Error(`PERMISSION_DENIED: Platform Administrator identity (${cleanEmail}) cannot be invited as tenant staff.`);
     }
+    const cleanPassword = typeof input.password === 'string' && input.password.trim().length > 0
+        ? input.password.trim()
+        : undefined;
+    if (cleanPassword && cleanPassword.length < 6) {
+        throw new Error('INVALID_ARGUMENT: Staff password must be at least 6 characters.');
+    }
     if (!Array.isArray(input.assignedShopIds) ||
         input.assignedShopIds.length === 0 ||
         input.assignedShopIds.length > 50) {
@@ -2443,6 +2448,38 @@ async function executeInviteAuthorizedStaff(dbDriver, auth, input, authDirectory
                 throw new Error(`PERMISSION_DENIED: Shop "${shopId}" does not belong to business "${input.businessId}".`);
             }
         }
+        // SEC-09: Prevent duplicate email or cross-tenant account hijacking by email
+        const existingUsersByEmail = await tx.queryDocsByField('users', 'email', cleanEmail);
+        if (existingUsersByEmail.length > 0) {
+            const existingByEmail = existingUsersByEmail[0];
+            if (existingByEmail.role === 'platform_admin') {
+                throw new Error('PERMISSION_DENIED: Cannot invite a Platform Administrator account as tenant staff.');
+            }
+            throw new Error(`ALREADY_EXISTS: Email "${cleanEmail}" is already registered to user "${existingByEmail.id}" in business "${existingByEmail.businessId}".`);
+        }
+        // Provision or verify the Firebase Authentication account on the server after
+        // authorization, idempotency, shop, and duplicate-email checks have passed.
+        if (authDirectory) {
+            if (!authUserForEmail && !input.staffUid && typeof authDirectory.createUser === 'function') {
+                authUserForEmail = await authDirectory.createUser({
+                    email: cleanEmail,
+                    displayName: cleanFullName,
+                    ...(cleanPassword ? { password: cleanPassword } : {}),
+                    emailVerified: true,
+                    disabled: false,
+                });
+            }
+            else if (authUserForEmail &&
+                typeof authDirectory.updateUser === 'function' &&
+                (!authUserForEmail.emailVerified || cleanPassword)) {
+                authUserForEmail = await authDirectory.updateUser(authUserForEmail.uid, {
+                    emailVerified: true,
+                    displayName: cleanFullName,
+                    disabled: false,
+                    ...(cleanPassword ? { password: cleanPassword } : {}),
+                });
+            }
+        }
         const resolvedAuthUid = authUserForEmail && isValidEntityId(authUserForEmail.uid)
             ? authUserForEmail.uid
             : undefined;
@@ -2464,15 +2501,6 @@ async function executeInviteAuthorizedStaff(dbDriver, auth, input, authDirectory
                 throw new Error(`PERMISSION_DENIED: Target UID "${staffUid}" belongs to a privileged account (${existingUserById.role}) and cannot be overwritten.`);
             }
             throw new Error(`ALREADY_EXISTS: Staff user profile "${staffUid}" already exists in business "${input.businessId}" and cannot be overwritten.`);
-        }
-        // SEC-09: Prevent duplicate email or cross-tenant account hijacking by email
-        const existingUsersByEmail = await tx.queryDocsByField('users', 'email', cleanEmail);
-        if (existingUsersByEmail.length > 0) {
-            const existingByEmail = existingUsersByEmail[0];
-            if (existingByEmail.role === 'platform_admin') {
-                throw new Error('PERMISSION_DENIED: Cannot invite a Platform Administrator account as tenant staff.');
-            }
-            throw new Error(`ALREADY_EXISTS: Email "${cleanEmail}" is already registered to user "${existingByEmail.id}" in business "${existingByEmail.businessId}".`);
         }
         const nowIso = new Date().toISOString();
         const cleanRoleLabel = typeof input.roleLabel === 'string' && input.roleLabel.trim().length > 0

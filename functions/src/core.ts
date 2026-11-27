@@ -665,6 +665,7 @@ export interface InviteAuthorizedStaffRequest {
   staffUid?: string;
   fullName: string;
   email: string;
+  password?: string;
   role: 'shop_manager' | 'cashier';
   roleLabel?: string;
   assignedShopIds: string[];
@@ -3393,6 +3394,16 @@ export async function executeInviteAuthorizedStaff(
     );
   }
 
+  const cleanPassword =
+    typeof input.password === 'string' && input.password.trim().length > 0
+      ? input.password.trim()
+      : undefined;
+  if (cleanPassword && cleanPassword.length < 6) {
+    throw new Error(
+      'INVALID_ARGUMENT: Staff password must be at least 6 characters.'
+    );
+  }
+
   if (
     !Array.isArray(input.assignedShopIds) ||
     input.assignedShopIds.length === 0 ||
@@ -3580,6 +3591,49 @@ if (!isAuthorizedOwner && !isAuthorizedAdmin) {
       }
     }
 
+    // SEC-09: Prevent duplicate email or cross-tenant account hijacking by email
+    const existingUsersByEmail = await tx.queryDocsByField(
+      'users',
+      'email',
+      cleanEmail
+    );
+    if (existingUsersByEmail.length > 0) {
+      const existingByEmail = existingUsersByEmail[0];
+      if (existingByEmail.role === 'platform_admin') {
+        throw new Error(
+          'PERMISSION_DENIED: Cannot invite a Platform Administrator account as tenant staff.'
+        );
+      }
+      throw new Error(
+        `ALREADY_EXISTS: Email "${cleanEmail}" is already registered to user "${existingByEmail.id}" in business "${existingByEmail.businessId}".`
+      );
+    }
+
+    // Provision or verify the Firebase Authentication account on the server after
+    // authorization, idempotency, shop, and duplicate-email checks have passed.
+    if (authDirectory) {
+      if (!authUserForEmail && !input.staffUid && typeof authDirectory.createUser === 'function') {
+        authUserForEmail = await authDirectory.createUser({
+          email: cleanEmail,
+          displayName: cleanFullName,
+          ...(cleanPassword ? { password: cleanPassword } : {}),
+          emailVerified: true,
+          disabled: false,
+        });
+      } else if (
+        authUserForEmail &&
+        typeof authDirectory.updateUser === 'function' &&
+        (!authUserForEmail.emailVerified || cleanPassword)
+      ) {
+        authUserForEmail = await authDirectory.updateUser(authUserForEmail.uid, {
+          emailVerified: true,
+          displayName: cleanFullName,
+          disabled: false,
+          ...(cleanPassword ? { password: cleanPassword } : {}),
+        });
+      }
+    }
+
     const resolvedAuthUid =
       authUserForEmail && isValidEntityId(authUserForEmail.uid)
         ? authUserForEmail.uid
@@ -3615,24 +3669,6 @@ if (!isAuthorizedOwner && !isAuthorizedAdmin) {
       }
       throw new Error(
         `ALREADY_EXISTS: Staff user profile "${staffUid}" already exists in business "${input.businessId}" and cannot be overwritten.`
-      );
-    }
-
-    // SEC-09: Prevent duplicate email or cross-tenant account hijacking by email
-    const existingUsersByEmail = await tx.queryDocsByField(
-      'users',
-      'email',
-      cleanEmail
-    );
-    if (existingUsersByEmail.length > 0) {
-      const existingByEmail = existingUsersByEmail[0];
-      if (existingByEmail.role === 'platform_admin') {
-        throw new Error(
-          'PERMISSION_DENIED: Cannot invite a Platform Administrator account as tenant staff.'
-        );
-      }
-      throw new Error(
-        `ALREADY_EXISTS: Email "${cleanEmail}" is already registered to user "${existingByEmail.id}" in business "${existingByEmail.businessId}".`
       );
     }
 
